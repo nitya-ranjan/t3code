@@ -24,6 +24,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { ThreadFallbackReason, ThreadFallbackState } from "./accountFallback.ts";
 import {
   PullRequestActor,
   PullRequestChecksState,
@@ -842,6 +843,9 @@ export const OrchestrationThread = Schema.Struct({
   // Survives manual settle, un-settle, and activity: only the user clears it.
   // Optional so payloads from older servers still decode.
   autoSettleDisabledAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  // Account fallback chain state (waiting for a usage reset, paused,
+  // continuation links). Optional so payloads from older servers still decode.
+  fallback: Schema.optional(Schema.NullOr(ThreadFallbackState)),
   // Pending-only state. Optional so older servers remain compatible.
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   titleState: Schema.optional(Schema.NullOr(ThreadTitleState)),
@@ -913,6 +917,7 @@ export const OrchestrationThreadShell = Schema.Struct({
   pinOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   activeOrderKey: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   autoSettleDisabledAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  fallback: Schema.optional(Schema.NullOr(ThreadFallbackState)),
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   titleState: Schema.optional(Schema.NullOr(ThreadTitleState)),
   session: Schema.NullOr(OrchestrationSession),
@@ -1231,6 +1236,23 @@ const ThreadAutoSettleSetCommand = Schema.Struct({
   enabled: Schema.Boolean,
 });
 
+const ThreadFallbackSetPausedCommand = Schema.Struct({
+  type: Schema.Literal("thread.fallback.set-paused"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  // true stops the fallback reactor from switching accounts or resuming this
+  // thread; false hands control back to it.
+  paused: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
+const ThreadFallbackCancelWaitCommand = Schema.Struct({
+  type: Schema.Literal("thread.fallback.cancel-wait"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  createdAt: IsoDateTime,
+});
+
 const ThreadActiveReorderCommand = Schema.Struct({
   type: Schema.Literal("thread.active.reorder"),
   commandId: CommandId,
@@ -1440,6 +1462,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUnpinCommand,
   ThreadPinReorderCommand,
   ThreadAutoSettleSetCommand,
+  ThreadFallbackSetPausedCommand,
+  ThreadFallbackCancelWaitCommand,
   ThreadActiveReorderCommand,
   ThreadMetaUpdateCommand,
   ThreadPullRequestLinkCommand,
@@ -1474,6 +1498,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadUnpinCommand,
   ThreadPinReorderCommand,
   ThreadAutoSettleSetCommand,
+  ThreadFallbackSetPausedCommand,
+  ThreadFallbackCancelWaitCommand,
   ThreadActiveReorderCommand,
   ThreadMetaUpdateCommand,
   ThreadPullRequestLinkCommand,
@@ -1658,8 +1684,22 @@ const ThreadPullRequestLinkSyncCommand = Schema.Struct({
   stack: Schema.NullOr(ThreadPullRequestStack),
 });
 
+// Written by the account fallback reactor: records a thread's new fallback
+// state together with why it changed.
+const ThreadFallbackUpdateCommand = Schema.Struct({
+  type: Schema.Literal("thread.fallback.update"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  fallback: ThreadFallbackState,
+  reason: ThreadFallbackReason,
+  fromInstanceId: Schema.optional(ProviderInstanceId),
+  toInstanceId: Schema.optional(ProviderInstanceId),
+  createdAt: IsoDateTime,
+});
+
 const InternalOrchestrationCommand = Schema.Union([
   ThreadAutoSettleCommand,
+  ThreadFallbackUpdateCommand,
   ThreadPullRequestSyncCommand,
   ThreadPullRequestLinkSyncCommand,
   ThreadSessionSetCommand,
@@ -1703,6 +1743,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.unpinned",
   "thread.pin-reordered",
   "thread.auto-settle-set",
+  "thread.fallback-updated",
   "thread.meta-updated",
   "thread.pull-request-linked",
   "thread.pull-request-unlinked",
@@ -1845,6 +1886,15 @@ export const ThreadAutoSettleSetPayload = Schema.Struct({
   threadId: ThreadId,
   // Null re-enables automatic settlement.
   autoSettleDisabledAt: Schema.NullOr(IsoDateTime),
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadFallbackUpdatedPayload = Schema.Struct({
+  threadId: ThreadId,
+  fallback: ThreadFallbackState,
+  reason: ThreadFallbackReason,
+  fromInstanceId: Schema.optional(ProviderInstanceId),
+  toInstanceId: Schema.optional(ProviderInstanceId),
   updatedAt: IsoDateTime,
 });
 
@@ -2116,6 +2166,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.auto-settle-set"),
     payload: ThreadAutoSettleSetPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.fallback-updated"),
+    payload: ThreadFallbackUpdatedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

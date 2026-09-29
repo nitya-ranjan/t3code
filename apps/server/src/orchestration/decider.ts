@@ -884,6 +884,95 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.fallback.update": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.fallback-updated",
+        payload: {
+          threadId: command.threadId,
+          fallback: command.fallback,
+          reason: command.reason,
+          ...(command.fromInstanceId !== undefined
+            ? { fromInstanceId: command.fromInstanceId }
+            : {}),
+          ...(command.toInstanceId !== undefined ? { toInstanceId: command.toInstanceId } : {}),
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.fallback.set-paused": {
+      const thread = yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const fallback = thread.fallback ?? null;
+      if (fallback === null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `thread ${command.threadId} has no account fallback state to pause`,
+        });
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.fallback-updated",
+        payload: {
+          threadId: command.threadId,
+          fallback: { ...fallback, paused: command.paused },
+          reason: command.paused ? "paused" : "unpaused",
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.fallback.cancel-wait": {
+      const thread = yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const fallback = thread.fallback ?? null;
+      if (fallback === null || fallback.status !== "waiting") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `thread ${command.threadId} is not waiting for a usage reset`,
+        });
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.fallback-updated",
+        payload: {
+          threadId: command.threadId,
+          fallback: {
+            ...fallback,
+            status: "idle",
+            resumeAt: null,
+            waitingSince: null,
+            candidateInstanceId: null,
+          },
+          reason: "cancelled",
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.active.reorder": {
       const thread = yield* requireThreadNotArchived({
         readModel,
