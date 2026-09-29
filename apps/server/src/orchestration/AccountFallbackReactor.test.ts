@@ -756,10 +756,14 @@ describe("AccountFallbackReactor", () => {
           assert.strictEqual(update!.fallback.resumeAt, null);
           assert.strictEqual(update!.fallback.waitingSince, null);
           assert.deepStrictEqual(update!.fallback.triedInstanceIds, []);
+          assert.deepStrictEqual(yield* Ref.get(harness.webhooks), [
+            { url: WEBHOOK_URL, text: 'T3 "Fix login": resumed on Claude Work (same thread)' },
+          ]);
 
           // Idle now: later sweeps leave it alone.
           yield* advanceAndSweep(harness);
           assert.strictEqual((yield* Ref.get(harness.commands)).length, 2);
+          assert.strictEqual((yield* Ref.get(harness.webhooks)).length, 1);
         }),
       {
         settings: settingsWithChain([claudeWork.instanceId, claudePersonal.instanceId]),
@@ -802,6 +806,12 @@ describe("AccountFallbackReactor", () => {
           assert.strictEqual(update!.fallback.waitingSince, iso(NOW_MS + 15 * MINUTE_MS));
           assert.strictEqual(update!.fallback.candidateInstanceId, claudePersonal.instanceId);
           assert.deepStrictEqual(update!.fallback.triedInstanceIds, []);
+          assert.deepStrictEqual(yield* Ref.get(harness.webhooks), [
+            {
+              url: WEBHOOK_URL,
+              text: `T3 "Fix login": all accounts in Work are out, resuming around ${iso(NOW_MS + 2 * 60 * MINUTE_MS)}`,
+            },
+          ]);
         }),
       {
         settings: settingsWithChain([claudeWork.instanceId, claudePersonal.instanceId]),
@@ -847,6 +857,9 @@ describe("AccountFallbackReactor", () => {
           assert.deepStrictEqual(oldUpdate!.fallback.triedInstanceIds, []);
           assert.strictEqual(oldUpdate!.fromInstanceId, claudeWork.instanceId);
           assert.strictEqual(oldUpdate!.toInstanceId, claudePersonal.instanceId);
+          assert.deepStrictEqual(yield* Ref.get(harness.webhooks), [
+            { url: WEBHOOK_URL, text: 'T3 "Fix login": resumed on Claude Personal (new thread)' },
+          ]);
         }),
       {
         settings: settingsWithChain([claudeWork.instanceId, claudePersonal.instanceId]),
@@ -859,6 +872,44 @@ describe("AccountFallbackReactor", () => {
             resumeAt: iso(NOW_MS - 5 * MINUTE_MS),
             waitingSince: iso(NOW_MS - 60 * MINUTE_MS),
             candidateInstanceId: claudePersonal.instanceId,
+          }),
+        }),
+      },
+    ),
+  );
+
+  it.effect("a user turn cancels a wait, so the sweep leaves the thread alone", () =>
+    run(
+      (harness) =>
+        Effect.gen(function* () {
+          yield* awaitSweep(harness);
+          yield* harness.publishDomainEvent(turnStartRequested("client:abc"));
+          const commands = yield* Ref.get(harness.commands);
+          assert.strictEqual(commands.length, 1);
+          const [update] = commandsOfType(commands, "thread.fallback.update");
+          assert.strictEqual(update!.reason, "cancelled");
+          assert.deepStrictEqual(update!.fallback, {
+            ...waitingState({ paused: false }),
+            status: "idle",
+            resumeAt: null,
+            waitingSince: null,
+            candidateInstanceId: null,
+            triedInstanceIds: [],
+          });
+
+          yield* advanceAndSweep(harness);
+          yield* advanceAndSweep(harness);
+          assert.strictEqual((yield* Ref.get(harness.commands)).length, 1);
+          assert.strictEqual(yield* Ref.get(harness.refreshCalls), 0);
+          assert.deepStrictEqual(yield* Ref.get(harness.webhooks), []);
+        }),
+      {
+        settings: settingsWithChain([claudeWork.instanceId, claudePersonal.instanceId]),
+        instances: [claudeWork, claudePersonal],
+        thread: makeThread({
+          fallback: waitingState({
+            resumeAt: iso(NOW_MS + 2 * MINUTE_MS),
+            candidateInstanceId: claudeWork.instanceId,
           }),
         }),
       },

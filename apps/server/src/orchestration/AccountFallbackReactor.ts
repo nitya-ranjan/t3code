@@ -184,6 +184,19 @@ export const make = Effect.gen(function* () {
   const notify = (settings: ServerSettingsValue, text: string) =>
     webhook.notify(settings.accountFallback.webhookUrl, text);
 
+  const notifyWaiting = (
+    settings: ServerSettingsValue,
+    title: string,
+    chainId: FallbackChainId,
+    resumeAt: string | null,
+  ) => {
+    const chainName = settings.accountFallback.chains[chainId]?.displayName ?? chainId;
+    return notify(
+      settings,
+      `T3 "${title}": all accounts in ${chainName} are out, resuming around ${resumeAt ?? "unknown"}`,
+    );
+  };
+
   /** Candidates for every chain instance, keyed by instance id. */
   const buildCandidates = Effect.fn("AccountFallbackReactor.buildCandidates")(function* (input: {
     readonly chain: ReadonlyArray<ProviderInstanceId>;
@@ -495,24 +508,39 @@ export const make = Effect.gen(function* () {
           candidateInstanceId: decision.candidateInstanceId,
           resume: false,
         });
-        const chainName =
-          settings.accountFallback.chains[chain.chainId]?.displayName ?? chain.chainId;
-        yield* notify(
-          settings,
-          `T3 "${thread.title}": all accounts in ${chainName} are out, resuming around ${decision.resumeAt ?? "unknown"}`,
-        );
+        yield* notifyWaiting(settings, thread.title, chain.chainId, decision.resumeAt);
         return;
       }
     }
   });
 
-  /** A user turn starts a fresh attempt: every account may be tried again. */
+  /**
+   * A user turn starts a fresh attempt: every account may be tried again, and
+   * a wait is over (the user has moved on; the sweep must not start a turn too).
+   */
   const handleUserTurn = Effect.fn("AccountFallbackReactor.handleUserTurn")(function* (
     threadId: ThreadId,
   ) {
     const thread = yield* readThread(threadId);
     const fallback = thread?.fallback ?? null;
-    if (fallback === null || fallback.triedInstanceIds.length === 0) return;
+    if (fallback === null) return;
+    if (fallback.status === "waiting") {
+      yield* updateFallback({
+        threadId,
+        chainId: fallback.chainId,
+        reason: "cancelled",
+        change: (current) => ({
+          ...current,
+          status: "idle",
+          resumeAt: null,
+          waitingSince: null,
+          candidateInstanceId: null,
+          triedInstanceIds: [],
+        }),
+      });
+      return;
+    }
+    if (fallback.triedInstanceIds.length === 0) return;
     yield* updateFallback({
       threadId,
       chainId: fallback.chainId,
@@ -585,8 +613,13 @@ export const make = Effect.gen(function* () {
           reason: "resumed",
           resume: true,
         });
+        yield* notify(
+          settings,
+          `T3 "${thread.title}": resumed on ${accountName(decision.instanceId, infos.get(decision.instanceId) ?? null)} (same thread)`,
+        );
         return;
-      case "ContinueInNewThread":
+      case "ContinueInNewThread": {
+        const toInfo = infos.get(decision.instanceId) ?? null;
         yield* continueInNewThread({
           thread,
           chainId: chain.chainId,
@@ -596,11 +629,16 @@ export const make = Effect.gen(function* () {
             infos.get(currentInstanceId) ?? (yield* instanceInfo(currentInstanceId)),
           ),
           toInstanceId: decision.instanceId,
-          toInfo: infos.get(decision.instanceId) ?? null,
+          toInfo,
           reason: "resumed",
           resume: true,
         });
+        yield* notify(
+          settings,
+          `T3 "${thread.title}": resumed on ${accountName(decision.instanceId, toInfo)} (new thread)`,
+        );
         return;
+      }
       case "Wait":
         // `waitingSince: now` makes an unknown reset re-check in 15 minutes.
         yield* park({
@@ -610,6 +648,7 @@ export const make = Effect.gen(function* () {
           candidateInstanceId: decision.candidateInstanceId,
           resume: true,
         });
+        yield* notifyWaiting(settings, thread.title, chain.chainId, decision.resumeAt);
         return;
     }
   });
