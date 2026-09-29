@@ -7,7 +7,7 @@
 import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
-  type ProviderInstanceId,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as PubSub from "effect/PubSub";
@@ -20,17 +20,29 @@ export type KindAdapterMap = Partial<
   Record<ProviderDriverKind, ProviderAdapterShape<ProviderAdapterError>>
 >;
 
+export type InstanceAdapterMap = Partial<
+  Record<ProviderInstanceId, ProviderAdapterShape<ProviderAdapterError>>
+>;
+
 /**
  * Build a `ProviderAdapterRegistryShape` from a kind-keyed adapter map.
  * Every adapter present in the map is addressable through its default
- * provider instance id.
+ * provider instance id. `instances` adds adapters under explicit instance
+ * ids, such as two accounts of one driver; each gets its own continuation key.
  */
-export const makeAdapterRegistryMock = (adapters: KindAdapterMap): ProviderAdapterRegistryShape => {
+export const makeAdapterRegistryMock = (
+  adapters: KindAdapterMap,
+  instances: InstanceAdapterMap = {},
+): ProviderAdapterRegistryShape => {
   const byInstanceId = new Map<ProviderInstanceId, ProviderAdapterShape<ProviderAdapterError>>();
   for (const [kind, adapter] of Object.entries(adapters)) {
     if (!adapter) continue;
     const driverKind = ProviderDriverKind.make(kind);
     byInstanceId.set(defaultInstanceIdForDriver(driverKind), adapter);
+  }
+  for (const [instanceId, adapter] of Object.entries(instances)) {
+    if (!adapter) continue;
+    byInstanceId.set(ProviderInstanceId.make(instanceId), adapter);
   }
 
   const getByInstance: ProviderAdapterRegistryShape["getByInstance"] = (instanceId) => {

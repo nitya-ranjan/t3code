@@ -9,7 +9,11 @@ import {
   type OrchestrationEvent,
   type OrchestrationThread,
   type ProviderApprovalDecision,
+  type ProviderInstanceId,
+  type ServerProvider,
+  type ServerSettings,
 } from "@t3tools/contracts";
+import type { DeepPartial } from "@t3tools/shared/Struct";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -71,6 +75,8 @@ import * as PullRequestSyncReactor from "../src/orchestration/PullRequestSyncRea
 import * as ThreadPullRequestReactor from "../src/orchestration/ThreadPullRequestReactor.ts";
 import { OrchestrationReactor } from "../src/orchestration/Services/OrchestrationReactor.ts";
 import { ProjectionSnapshotQuery } from "../src/orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as AccountFallbackReactor from "../src/orchestration/AccountFallbackReactor.ts";
+import { FallbackWebhook } from "../src/orchestration/accountFallback/webhook.ts";
 import {
   RuntimeReceiptBus,
   type OrchestrationRuntimeReceipt,
@@ -184,6 +190,8 @@ export interface OrchestrationIntegrationHarness {
   readonly workspaceDir: string;
   readonly dbPath: string;
   readonly adapterHarness: TestProviderAdapterHarness | null;
+  /** The adapters behind `options.instanceIds`, by instance id. */
+  readonly instanceAdapterHarnesses: ReadonlyMap<ProviderInstanceId, TestProviderAdapterHarness>;
   readonly engine: OrchestrationEngineShape;
   readonly snapshotQuery: ProjectionSnapshotQuery["Service"];
   readonly providerService: ProviderService["Service"];
@@ -226,6 +234,7 @@ export interface OrchestrationIntegrationHarness {
   };
   readonly drainProviderRuntime: Effect.Effect<void>;
   readonly drainCheckpointReactor: Effect.Effect<void>;
+  readonly drainAccountFallback: Effect.Effect<void>;
   readonly dispose: Effect.Effect<void, never>;
 }
 
@@ -234,6 +243,13 @@ interface MakeOrchestrationIntegrationHarnessOptions {
   readonly realCodex?: boolean;
   /** Tracer for every fiber the harness runtime runs, including reactors. */
   readonly tracer?: Tracer.Tracer;
+  /** Extra instances of `provider`, each backed by its own test adapter. */
+  readonly instanceIds?: ReadonlyArray<ProviderInstanceId>;
+  /** What the provider registry reports, such as auth and usage per instance. */
+  readonly providers?: ReadonlyArray<ServerProvider>;
+  readonly serverSettings?: DeepPartial<ServerSettings>;
+  /** Run the real account fallback reactor instead of a no-op. */
+  readonly accountFallback?: boolean;
 }
 
 export const makeOrchestrationIntegrationHarness = (
@@ -250,10 +266,22 @@ export const makeOrchestrationIntegrationHarness = (
       : yield* makeTestProviderAdapterHarness({
           provider,
         });
+    const instanceAdapterHarnesses = new Map<ProviderInstanceId, TestProviderAdapterHarness>();
+    for (const instanceId of options?.instanceIds ?? []) {
+      instanceAdapterHarnesses.set(instanceId, yield* makeTestProviderAdapterHarness({ provider }));
+    }
     const fakeRegistry = adapterHarness
       ? Layer.succeed(
           ProviderAdapterRegistry,
-          makeAdapterRegistryMock({ [adapterHarness.provider]: adapterHarness.adapter }),
+          makeAdapterRegistryMock(
+            { [adapterHarness.provider]: adapterHarness.adapter },
+            Object.fromEntries(
+              Array.from(instanceAdapterHarnesses, ([instanceId, harness]) => [
+                instanceId,
+                harness.adapter,
+              ]),
+            ),
+          ),
         )
       : null;
     const rootDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -304,7 +332,7 @@ export const makeOrchestrationIntegrationHarness = (
           Layer.provide(AnalyticsService.layerTest),
           Layer.provide(providerEventLoggersLayer),
         );
-    const providerRegistryLayer = makeProviderRegistryLayer();
+    const providerRegistryLayer = makeProviderRegistryLayer(options?.providers);
 
     const checkpointStoreLayer = CheckpointStore.layer.pipe(Layer.provide(VcsDriverRegistry.layer));
     const projectionSnapshotQueryLayer = OrchestrationProjectionSnapshotQueryLive;
@@ -319,7 +347,7 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(ThreadBackgroundLiveness.layer),
       Layer.provideMerge(ThreadPlanProgress.layer),
     );
-    const serverSettingsLayer = ServerSettingsService.layerTest();
+    const serverSettingsLayer = ServerSettingsService.layerTest(options?.serverSettings);
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(serverSettingsLayer),
@@ -382,7 +410,16 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(WorkspacePaths.layer),
       Layer.provideMerge(VcsProcess.layer),
     );
+    const accountFallbackLayer = options?.accountFallback
+      ? AccountFallbackReactor.layer.pipe(
+          Layer.provide(Layer.succeed(FallbackWebhook, { notify: () => Effect.void })),
+        )
+      : Layer.succeed(AccountFallbackReactor.AccountFallbackReactor, {
+          start: () => Effect.void,
+          drain: Effect.void,
+        });
     const orchestrationReactorLayer = OrchestrationReactorLive.pipe(
+      Layer.provideMerge(accountFallbackLayer),
       Layer.provideMerge(
         Layer.succeed(StorageCleanup.StorageCleanup, {
           start: () => Effect.void,
@@ -431,7 +468,7 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(providerRegistryLayer),
       Layer.provide(persistenceLayer),
       Layer.provideMerge(RepositoryIdentityResolver.layer),
-      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(serverSettingsLayer),
       Layer.provideMerge(ServerConfig.layerTest(workspaceDir, rootDir)),
       Layer.provideMerge(NodeServices.layer),
       Layer.provideMerge(
@@ -465,6 +502,10 @@ export const makeOrchestrationIntegrationHarness = (
     const pendingApprovalRepository = yield* tryRuntimePromise(
       "load ProjectionPendingApprovalRepository service",
       () => runtime.runPromise(Effect.service(ProjectionPendingApprovalRepository)),
+    ).pipe(Effect.orDie);
+    const accountFallbackReactor = yield* tryRuntimePromise(
+      "load AccountFallbackReactor service",
+      () => runtime.runPromise(Effect.service(AccountFallbackReactor.AccountFallbackReactor)),
     ).pipe(Effect.orDie);
     const runtimeReceiptBus = yield* tryRuntimePromise("load RuntimeReceiptBus service", () =>
       runtime.runPromise(Effect.service(RuntimeReceiptBus)),
@@ -603,6 +644,7 @@ export const makeOrchestrationIntegrationHarness = (
       workspaceDir,
       dbPath,
       adapterHarness,
+      instanceAdapterHarnesses,
       engine,
       snapshotQuery,
       providerService,
@@ -614,6 +656,7 @@ export const makeOrchestrationIntegrationHarness = (
       waitForReceipt,
       drainProviderRuntime: providerRuntimeIngestion.drain,
       drainCheckpointReactor: checkpointReactor.drain,
+      drainAccountFallback: accountFallbackReactor.drain,
       dispose,
     } satisfies OrchestrationIntegrationHarness;
   });
