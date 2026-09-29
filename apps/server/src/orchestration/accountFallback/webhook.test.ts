@@ -4,7 +4,7 @@ import * as Layer from "effect/Layer";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 
-import { FallbackWebhook } from "./webhook.ts";
+import { FallbackWebhook, webhookLogTarget } from "./webhook.ts";
 
 interface Recorded {
   readonly method: string;
@@ -68,4 +68,16 @@ describe("FallbackWebhook", () => {
       yield* webhook.notify("https://hooks.example.test/x", "text");
     }).pipe(Effect.provide(FallbackWebhook.layer.pipe(Layer.provide(failingClient)))),
   );
+});
+
+describe("webhookLogTarget", () => {
+  it("keeps only the host, never the path or query", () => {
+    assert.strictEqual(
+      webhookLogTarget("https://hooks.example.test:8443/services/SECRET?token=abc"),
+      "hooks.example.test:8443",
+    );
+  });
+  it("falls back for unparseable urls without throwing", () => {
+    assert.strictEqual(webhookLogTarget("not a url/SECRET"), "invalid-url");
+  });
 });
