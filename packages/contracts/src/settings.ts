@@ -11,6 +11,7 @@ import {
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
+import { AccountFallbackSettings, FallbackChainId } from "./accountFallback.ts";
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
 import { EnvironmentMachineKind, ThreadEnvMode, WorktreeSubmodules } from "./environment.ts";
 import { KeybindingShortcut } from "./keybindings.ts";
@@ -1038,6 +1039,7 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "sidebarAutoSettleAfterDays",
   "continueThreadsAfterServerUpdate",
   "responseStreamingMode",
+  "accountFallbackChainId",
 ] as const;
 export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];
 
@@ -1065,6 +1067,7 @@ export const ProjectSettingsOverrides = Schema.Struct({
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
+  accountFallbackChainId: Schema.optionalKey(Schema.NullOr(FallbackChainId)),
 } satisfies Record<ProjectScopedServerSettingKey, unknown>);
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
@@ -1077,16 +1080,18 @@ export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 export function isNullableProjectSettingsOverride(key: ProjectScopedServerSettingKey): boolean {
   return NULLABLE_PROJECT_SETTINGS_OVERRIDES.has(key);
 }
-const NULLABLE_PROJECT_SETTINGS_OVERRIDES: ReadonlySet<ProjectScopedServerSettingKey> = new Set<
-  {
-    [K in ProjectScopedServerSettingKey]: null extends ProjectSettingsOverrides[K] ? K : never;
-  }[ProjectScopedServerSettingKey]
->([
-  "defaultModelSelection",
-  "sourceControlWriterModelSelection",
-  "pullRequestMergeMethod",
-  "sidebarAutoSettleAfterDays",
-]);
+export const NULLABLE_PROJECT_SETTINGS_OVERRIDES: ReadonlySet<ProjectScopedServerSettingKey> =
+  new Set<
+    {
+      [K in ProjectScopedServerSettingKey]: null extends ProjectSettingsOverrides[K] ? K : never;
+    }[ProjectScopedServerSettingKey]
+  >([
+    "defaultModelSelection",
+    "sourceControlWriterModelSelection",
+    "pullRequestMergeMethod",
+    "sidebarAutoSettleAfterDays",
+    "accountFallbackChainId",
+  ]);
 
 export const StorageCleanupSettings = Schema.Struct({
   worktreeAfterDays: StorageRetentionDays.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -1101,6 +1106,12 @@ export const StorageCleanupSettings = Schema.Struct({
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
 export const ServerSettings = Schema.Struct({
+  accountFallback: AccountFallbackSettings.pipe(
+    Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(AccountFallbackSettings)({}))),
+  ),
+  accountFallbackChainId: Schema.NullOr(FallbackChainId).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   storageCleanup: StorageCleanupSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(StorageCleanupSettings)({}))),
@@ -1462,6 +1473,8 @@ const OpenCodeSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  accountFallback: Schema.optionalKey(AccountFallbackSettings),
+  accountFallbackChainId: Schema.optionalKey(Schema.NullOr(FallbackChainId)),
   worktreeCleanup: Schema.optionalKey(
     Schema.NullOr(
       Schema.Union([

@@ -369,6 +369,7 @@ export function applyServerSettingsPatch(
           ),
         }
       : {}),
+    ...(patch.accountFallback !== undefined ? { accountFallback: patch.accountFallback } : {}),
     ...(patch.defaultModelSelection !== undefined
       ? { defaultModelSelection: patch.defaultModelSelection }
       : {}),

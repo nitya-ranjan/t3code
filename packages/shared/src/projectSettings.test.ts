@@ -1,5 +1,6 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  FallbackChainId,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
   ProjectId,
   ProviderInstanceId,
@@ -364,5 +365,29 @@ describe("resolveWorktreeCleanup", () => {
       resolveWorktreeCleanup(applyServerSettingsPatch(edited, { worktreeCleanup: null }), null)
         .worktreeAfterDays,
     ).toBe(8);
+  });
+});
+
+describe("account fallback project override", () => {
+  it("lets a project turn fallback off or pick another chain", () => {
+    const base = {
+      ...DEFAULT_SERVER_SETTINGS,
+      accountFallbackChainId: FallbackChainId.make("personal"),
+    };
+    expect(resolveProjectSettings(base, projectId).settings.accountFallbackChainId).toBe(
+      "personal",
+    );
+    const off = {
+      ...base,
+      projectSettingsOverrides: { [projectId]: { accountFallbackChainId: null } },
+    };
+    expect(resolveProjectSettings(off, projectId).settings.accountFallbackChainId).toBeNull();
+    const work = {
+      ...base,
+      projectSettingsOverrides: {
+        [projectId]: { accountFallbackChainId: FallbackChainId.make("work") },
+      },
+    };
+    expect(resolveProjectSettings(work, projectId).settings.accountFallbackChainId).toBe("work");
   });
 });

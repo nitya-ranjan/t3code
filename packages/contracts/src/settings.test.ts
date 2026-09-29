@@ -7,6 +7,8 @@ import {
   ClientSettingsPatch,
   ClaudeSettings,
   DEFAULT_SERVER_SETTINGS,
+  NULLABLE_PROJECT_SETTINGS_OVERRIDES,
+  PROJECT_SCOPED_SERVER_SETTING_KEYS,
   resolveProviderInstanceEnabled,
   ServerSettings,
   ServerSettingsPatch,
@@ -1008,4 +1010,20 @@ it("validates remote device hosts and rejects ambiguous host ids", () => {
     decodeDeviceHostSettings({ deviceHosts: [{ ...host, target: "-oProxyCommand=bad" }] }),
   ).toThrow();
   expect(() => decodeDeviceHostSettings({ deviceHosts: [{ ...host, port: 0 }] })).toThrow();
+});
+
+describe("account fallback settings", () => {
+  it("defaults account fallback to off", () => {
+    expect(DEFAULT_SERVER_SETTINGS.accountFallback).toEqual({
+      chains: {},
+      maxHandoffsPerThreadPerHour: 3,
+      webhookUrl: null,
+    });
+    expect(DEFAULT_SERVER_SETTINGS.accountFallbackChainId).toBeNull();
+  });
+
+  it("treats the fallback chain as a nullable project override", () => {
+    expect(PROJECT_SCOPED_SERVER_SETTING_KEYS).toContain("accountFallbackChainId");
+    expect(NULLABLE_PROJECT_SETTINGS_OVERRIDES).toContain("accountFallbackChainId");
+  });
 });

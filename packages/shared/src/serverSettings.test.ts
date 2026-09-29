@@ -1,5 +1,6 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  FallbackChainId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -758,5 +759,28 @@ describe("serverSettings helpers", () => {
     });
 
     expect(resolved.pauseWhenOnBattery).toBe(false);
+  });
+});
+
+describe("account fallback settings patch", () => {
+  it("replaces account fallback settings instead of merging chains", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      accountFallback: {
+        chains: {
+          [FallbackChainId.make("work")]: {
+            displayName: "Work",
+            instanceIds: [ProviderInstanceId.make("claude_work")],
+          },
+        },
+        maxHandoffsPerThreadPerHour: 3,
+        webhookUrl: null,
+      },
+    };
+    const next = applyServerSettingsPatch(current, {
+      accountFallback: { chains: {}, maxHandoffsPerThreadPerHour: 5, webhookUrl: null },
+    });
+    expect(next.accountFallback.chains).toEqual({});
+    expect(next.accountFallback.maxHandoffsPerThreadPerHour).toBe(5);
   });
 });
