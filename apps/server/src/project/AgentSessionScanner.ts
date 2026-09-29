@@ -23,10 +23,12 @@ import {
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
   type AgentSessionImportSource,
+  type AgentSessionKey,
   type AgentSessionProjectCandidate,
   type AgentSessionProjectGit,
   type AgentSessionScanResult,
   type ProviderInstanceConfig,
+  type ServerSettings as ContractServerSettings,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -83,6 +85,8 @@ const MAX_METADATA_OPERATIONS_PER_SOURCE = MAX_TRANSCRIPTS_PER_SOURCE * 4;
 const MAX_METADATA_RECORDS_PER_SOURCE = 100_000;
 const MAX_METADATA_RECORDS_PER_TRANSCRIPT = 1_000;
 const RECENT_THREAD_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+/** The session picker shows the newest sessions first; older ones are marked truncated. */
+const MAX_LISTED_SESSIONS = 500;
 /**
  * Large tool results (especially screenshots) can make an otherwise ordinary
  * Codex transcript several GiB. Streaming field selection avoids allocating
@@ -116,6 +120,8 @@ const TranscriptRecord = Schema.Struct({
   cwd: Schema.optional(Schema.String),
   sessionId: Schema.optional(Schema.String),
   aiTitle: Schema.optional(Schema.String),
+  summary: Schema.optional(Schema.String),
+  entrypoint: Schema.optional(Schema.String),
   isSidechain: Schema.optional(Schema.Boolean),
   isMeta: Schema.optional(Schema.Boolean),
   isCompactSummary: Schema.optional(Schema.Boolean),
@@ -129,6 +135,8 @@ const TranscriptRecord = Schema.Struct({
       message: Schema.optional(Schema.String),
       model: Schema.optional(Schema.String),
       cwd: Schema.optional(Schema.String),
+      source: Schema.optional(Schema.Unknown),
+      originator: Schema.optional(Schema.String),
       content: Schema.optional(Schema.Array(TranscriptContentBlock)),
       internal_chat_message_metadata_passthrough: Schema.optional(Schema.Unknown),
     }),
@@ -178,6 +186,35 @@ export type AgentSessionRecentThread =
   | { readonly _tag: "Duplicate"; readonly source: AgentSessionImportSource }
   | { readonly _tag: "Skipped" };
 
+/** One transcript as listed by {@link AgentSessionScanner.listSessions}. */
+export interface AgentSessionSummary {
+  readonly source: AgentSessionSource;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly providerSessionId: string;
+  readonly cwd: string;
+  readonly cwdExists: boolean;
+  readonly title: string;
+  readonly lastActiveAtMs: number;
+  readonly size: number;
+  readonly automated: boolean;
+  readonly filePath: string;
+}
+
+export interface AgentSessionListing {
+  readonly sessions: ReadonlyArray<AgentSessionSummary>;
+  readonly truncated: boolean;
+}
+
+/** A listed session read in full, ready to import. */
+export interface AgentSessionRead {
+  readonly thread: AgentSessionThread;
+  readonly source: AgentSessionImportSource;
+  readonly cwd: string;
+  readonly cwdExists: boolean;
+  /** Default title for a project created at `cwd`. */
+  readonly folderName: string;
+}
+
 /** Service tag for agent session discovery. */
 export class AgentSessionScanner extends Context.Service<
   AgentSessionScanner,
@@ -193,6 +230,17 @@ export class AgentSessionScanner extends Context.Service<
       workspaceRoot: string,
       completedSources?: ReadonlyArray<AgentSessionImportSource>,
     ) => Stream.Stream<AgentSessionRecentThread, AgentSessionScanError>;
+    /**
+     * Every session in the configured homes, newest first, regardless of age.
+     * Unlike {@link scan}, sessions run in the home directory or a deleted
+     * folder are kept so the user can decide; only T3 Code's own sandboxes are
+     * left out.
+     */
+    readonly listSessions: Effect.Effect<AgentSessionListing, AgentSessionScanError>;
+    /** Read one listed session's history. `None` when it is gone or no longer matches. */
+    readonly readSession: (
+      key: AgentSessionKey,
+    ) => Effect.Effect<Option.Option<AgentSessionRead>, AgentSessionScanError>;
   }
 >()("t3/project/AgentSessionScanner") {}
 
@@ -492,18 +540,96 @@ function parseAgentSessionRecords(
   const retainedMessages = firstUserMessageRetained
     ? visibleMessages
     : [visibleFirstUserMessage, ...visibleMessages.slice(-(MAX_IMPORTED_MESSAGES - 1))];
-  const derivedTitle = visibleFirstUserMessage.text.trim().split("\n")[0]?.slice(0, 100).trim();
+  const derivedTitle = deriveTitle(visibleFirstUserMessage.text);
 
   return {
     source: input.source,
     providerInstanceId: input.providerInstanceId,
     providerSessionId,
-    title: title ?? (derivedTitle && derivedTitle.length > 0 ? derivedTitle : "Imported thread"),
+    title: title ?? derivedTitle ?? "Imported thread",
     model,
     createdAt: retainedMessages[0]?.createdAt ?? fallbackTimestamp,
     updatedAt: fallbackTimestamp,
     messages: retainedMessages,
   };
+}
+
+interface SessionSummaryState {
+  cwd: string | null;
+  sessionId: string | null;
+  title: string | null;
+  firstPrompt: string | null;
+  automated: boolean | null;
+}
+
+const emptySessionSummaryState = (): SessionSummaryState => ({
+  cwd: null,
+  sessionId: null,
+  title: null,
+  firstPrompt: null,
+  automated: null,
+});
+
+/**
+ * Fold one record into a listing summary. Claude marks headless runs with an
+ * `entrypoint` other than `cli` (`sdk-cli` for `claude -p`, `sdk-ts` for SDK
+ * callers); Codex marks them with `source: "exec"`. Returns whether the summary
+ * is complete, so callers can stop reading early.
+ */
+function applySessionSummaryRecord(
+  source: AgentSessionSource,
+  state: SessionSummaryState,
+  record: DecodedTranscriptRecord,
+): boolean {
+  state.cwd ??= extractDecodedCwd(record);
+  if (source === "claudeAgent") {
+    const entrypoint = record.entrypoint?.trim();
+    if (state.automated === null && entrypoint) state.automated = entrypoint !== "cli";
+    if (state.sessionId === null && record.sessionId?.trim()) {
+      state.sessionId = record.sessionId.trim();
+    }
+    if (record.aiTitle?.trim()) state.title = record.aiTitle.trim();
+    else if (state.title === null && record.type === "summary" && record.summary?.trim()) {
+      state.title = record.summary.trim();
+    }
+    if (
+      state.firstPrompt === null &&
+      record.type === "user" &&
+      record.isMeta !== true &&
+      record.isSidechain !== true &&
+      record.isCompactSummary !== true
+    ) {
+      const text = extractText(record.message?.content);
+      if (text.length > 0) state.firstPrompt = text;
+    }
+    return (
+      state.cwd !== null &&
+      state.sessionId !== null &&
+      state.firstPrompt !== null &&
+      state.automated !== null &&
+      state.title !== null
+    );
+  }
+  if (record.type === "session_meta") {
+    const sessionId = record.payload?.id?.trim() || record.payload?.session_id?.trim();
+    if (state.sessionId === null && sessionId) state.sessionId = sessionId;
+    state.automated ??=
+      record.payload?.source === "exec" || record.payload?.originator === "codex_exec";
+  }
+  if (
+    state.firstPrompt === null &&
+    record.type === "event_msg" &&
+    record.payload?.type === "user_message" &&
+    record.payload.message?.trim()
+  ) {
+    state.firstPrompt = record.payload.message.trim();
+  }
+  return state.cwd !== null && state.sessionId !== null && state.firstPrompt !== null;
+}
+
+function deriveTitle(text: string): string | null {
+  const title = text.trim().split("\n")[0]?.slice(0, 100).trim();
+  return title && title.length > 0 ? title : null;
 }
 
 function extractDecodedCwd(record: DecodedTranscriptRecord): string | null {
@@ -727,20 +853,25 @@ export const make = Effect.gen(function* () {
     } as const;
   });
 
-  // A large history snapshot can precede session metadata. Read bounded
-  // chunks until a complete record names its cwd or the safety budget ends.
-  const readCwd = Effect.fn("AgentSessionScanner.readCwd")(function* (
+  /**
+   * Feed complete records from the start of a transcript to `visit` until it
+   * returns true or a budget runs out. A large history snapshot can precede
+   * session metadata, so reads continue in bounded chunks. Returns whether
+   * `visit` stopped the read.
+   */
+  const scanTranscriptPrefix = Effect.fn("AgentSessionScanner.scanTranscriptPrefix")(function* (
     transcript: TranscriptCandidate,
     budget: MetadataReadBudget,
+    visit: (record: string) => boolean,
   ) {
-    if (transcript.size === 0) return null;
+    if (transcript.size === 0) return false;
     if (
       budget.bytesRemaining === 0 ||
       budget.operationsRemaining < 2 ||
       budget.recordsRemaining === 0
     ) {
       budget.truncated = true;
-      return null;
+      return false;
     }
     budget.operationsRemaining -= 1;
     return yield* Effect.scoped(
@@ -764,15 +895,15 @@ export const make = Effect.gen(function* () {
               budget.recordsRemaining -= 1;
               return true;
             };
-            const readLastRecord = () => {
+            const visitLastRecord = () => {
               const record = remaining + decoder.decode();
-              return record.length === 0 || !reserveRecord() ? null : extractCwd(record.trim());
+              return record.length > 0 && reserveRecord() && visit(record.trim());
             };
 
             while (bytesRead < maxBytes) {
               if (budget.bytesRemaining === 0 || budget.operationsRemaining === 0) {
                 budget.truncated = true;
-                return null;
+                return false;
               }
               const readSize = Math.min(
                 METADATA_READ_BYTES,
@@ -783,7 +914,7 @@ export const make = Effect.gen(function* () {
               budget.bytesRemaining -= readSize;
               const next = yield* file.readAlloc(readSize);
               if (Option.isNone(next)) {
-                return readLastRecord();
+                return visitLastRecord();
               }
 
               bytesRead += next.value.byteLength;
@@ -792,21 +923,48 @@ export const make = Effect.gen(function* () {
               remaining = lines.pop() ?? "";
 
               for (const line of lines) {
-                if (!reserveRecord()) return null;
-                const cwd = extractCwd(line.trim());
-                if (cwd !== null) return cwd;
+                if (!reserveRecord()) return false;
+                if (visit(line.trim())) return true;
               }
             }
 
             if (bytesRead < transcript.size) {
               budget.truncated = true;
-              return null;
+              return false;
             }
-            return readLastRecord();
+            return visitLastRecord();
           }),
         ),
       ),
-    ).pipe(Effect.orElseSucceed(() => null));
+    ).pipe(Effect.orElseSucceed(() => false));
+  });
+
+  const readCwd = Effect.fn("AgentSessionScanner.readCwd")(function* (
+    transcript: TranscriptCandidate,
+    budget: MetadataReadBudget,
+  ) {
+    let cwd: string | null = null;
+    yield* scanTranscriptPrefix(transcript, budget, (record) => {
+      cwd = extractCwd(record);
+      return cwd !== null;
+    });
+    return cwd;
+  });
+
+  /** Summary fields for the session picker, read from the transcript's opening records. */
+  const readSessionSummary = Effect.fn("AgentSessionScanner.readSessionSummary")(function* (
+    source: AgentSessionSource,
+    transcript: TranscriptCandidate,
+    budget: MetadataReadBudget,
+  ) {
+    const state = emptySessionSummaryState();
+    yield* scanTranscriptPrefix(transcript, budget, (record) =>
+      Option.match(decodeTranscriptRecord(record), {
+        onNone: () => false,
+        onSome: (decoded) => applySessionSummaryRecord(source, state, decoded),
+      }),
+    );
+    return state;
   });
 
   /**
@@ -1082,15 +1240,17 @@ export const make = Effect.gen(function* () {
     }));
   });
 
-  const collectCandidates = Effect.fn("AgentSessionScanner.collectCandidates")(function* () {
-    const settings = yield* serverSettings.getSettings.pipe(
-      Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-settings", cause })),
-    );
+  const readSettings = serverSettings.getSettings.pipe(
+    Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-settings", cause })),
+  );
 
-    const raw: Array<RawCandidate> = [];
-    let truncated = false;
-
-    for (const source of ["claudeAgent", "codex"] as const) {
+  /**
+   * Transcripts from every enabled home of one source, newest first, capped to
+   * the per-source read budget with each account getting a turn.
+   */
+  const discoverSourceTranscripts = Effect.fn("AgentSessionScanner.discoverSourceTranscripts")(
+    function* (settings: ContractServerSettings, source: AgentSessionSource) {
+      let truncated = false;
       const instances: Array<{
         readonly instanceId: ProviderInstanceId;
         readonly config: ProviderInstanceConfig;
@@ -1182,14 +1342,26 @@ export const make = Effect.gen(function* () {
         truncated = true;
       }
       // Give each account a turn before taking another file from the same home.
-      const selectedTranscripts = selectMetadataTranscripts(transcriptCandidates);
+      return { transcripts: selectMetadataTranscripts(transcriptCandidates), truncated };
+    },
+  );
+
+  const collectCandidates = Effect.fn("AgentSessionScanner.collectCandidates")(function* () {
+    const settings = yield* readSettings;
+
+    const raw: Array<RawCandidate> = [];
+    let truncated = false;
+
+    for (const source of ["claudeAgent", "codex"] as const) {
+      const discovered = yield* discoverSourceTranscripts(settings, source);
+      truncated ||= discovered.truncated;
       const metadataBudget: MetadataReadBudget = {
         bytesRemaining: MAX_METADATA_BYTES_PER_SOURCE,
         operationsRemaining: MAX_METADATA_OPERATIONS_PER_SOURCE,
         recordsRemaining: MAX_METADATA_RECORDS_PER_SOURCE,
         truncated: false,
       };
-      raw.push(...(yield* groupTranscriptsByCwd(source, selectedTranscripts, metadataBudget)));
+      raw.push(...(yield* groupTranscriptsByCwd(source, discovered.transcripts, metadataBudget)));
       truncated ||= metadataBudget.truncated;
     }
 
@@ -1489,7 +1661,156 @@ export const make = Effect.gen(function* () {
     completedSources = [],
   ) => Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources));
 
-  return AgentSessionScanner.of({ scan, recentThreads });
+  /** T3 Code's own sandboxes: its base directory and every managed worktree. */
+  const isT3OwnedPath = (candidatePath: string) =>
+    normalizeForWorktreeMatch(candidatePath, foldWorktreeCase).startsWith(
+      normalizeForWorktreeMatch(baseDir, foldWorktreeCase),
+    ) || isT3ManagedWorktree(candidatePath, worktreesDir, foldWorktreeCase);
+
+  let listedSessions = new Map<string, AgentSessionSummary>();
+  const sessionKey = (providerInstanceId: string, providerSessionId: string) =>
+    `${providerInstanceId}\0${providerSessionId}`;
+
+  const listSessions: AgentSessionScanner["Service"]["listSessions"] = Effect.gen(function* () {
+    const settings = yield* readSettings;
+    const sessions: Array<AgentSessionSummary> = [];
+    const seen = new Set<string>();
+    const folders = new Map<string, { readonly owned: boolean; readonly exists: boolean }>();
+    let truncated = false;
+
+    for (const source of ["claudeAgent", "codex"] as const) {
+      const discovered = yield* discoverSourceTranscripts(settings, source);
+      truncated ||= discovered.truncated;
+      const budget: MetadataReadBudget = {
+        bytesRemaining: MAX_METADATA_BYTES_PER_SOURCE,
+        operationsRemaining: MAX_METADATA_OPERATIONS_PER_SOURCE,
+        recordsRemaining: MAX_METADATA_RECORDS_PER_SOURCE,
+        truncated: false,
+      };
+      for (const transcript of discovered.transcripts) {
+        const summary = yield* readSessionSummary(source, transcript, budget);
+        // Claude filenames are session IDs; Codex IDs only come from metadata.
+        const providerSessionId =
+          summary.sessionId ??
+          (source === "claudeAgent" ? path.basename(transcript.filePath, ".jsonl") : null);
+        const title =
+          summary.title ?? (summary.firstPrompt === null ? null : deriveTitle(summary.firstPrompt));
+        if (summary.cwd === null || providerSessionId === null || title === null) continue;
+        const expanded = expandHomePath(summary.cwd.trim());
+        if (!path.isAbsolute(expanded)) continue;
+        const cwd = path.resolve(expanded);
+
+        let folder = folders.get(cwd);
+        if (folder === undefined) {
+          const stats = yield* statOption(cwd);
+          const exists = Option.isSome(stats) && stats.value.type === "Directory";
+          const realPath = exists
+            ? yield* fileSystem.realPath(cwd).pipe(Effect.orElseSucceed(() => cwd))
+            : cwd;
+          folder = { owned: isT3OwnedPath(cwd) || isT3OwnedPath(realPath), exists };
+          folders.set(cwd, folder);
+        }
+        if (folder.owned) continue;
+
+        const key = sessionKey(transcript.providerInstanceId, providerSessionId);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        sessions.push({
+          source,
+          providerInstanceId: transcript.providerInstanceId,
+          providerSessionId,
+          cwd,
+          cwdExists: folder.exists,
+          title,
+          lastActiveAtMs: transcript.mtimeMs,
+          size: transcript.size,
+          automated: summary.automated ?? false,
+          filePath: transcript.filePath,
+        });
+      }
+      truncated ||= budget.truncated;
+    }
+
+    sessions.sort(
+      (left, right) =>
+        right.lastActiveAtMs - left.lastActiveAtMs || left.filePath.localeCompare(right.filePath),
+    );
+    listedSessions = new Map(
+      sessions.map((session) => [
+        sessionKey(session.providerInstanceId, session.providerSessionId),
+        session,
+      ]),
+    );
+    return {
+      sessions: sessions.slice(0, MAX_LISTED_SESSIONS),
+      truncated: truncated || sessions.length > MAX_LISTED_SESSIONS,
+    };
+  });
+
+  const readSession: AgentSessionScanner["Service"]["readSession"] = Effect.fn(
+    "AgentSessionScanner.readSession",
+  )(function* (key) {
+    const lookup = () =>
+      Option.fromNullishOr(
+        listedSessions.get(sessionKey(key.providerInstanceId, key.providerSessionId)),
+      );
+    let summary = lookup();
+    if (Option.isNone(summary)) {
+      yield* listSessions;
+      summary = lookup();
+    }
+    if (Option.isNone(summary)) return Option.none();
+    const listed = summary.value;
+
+    const stats = yield* statOption(listed.filePath);
+    if (Option.isNone(stats) || stats.value.type !== "File") return Option.none();
+    const identity = transcriptIdentity(listed.filePath, stats.value);
+    const snapshot = yield* readTranscript(
+      listed.filePath,
+      identity,
+      MAX_IMPORT_RECORDS,
+      listed.source,
+    ).pipe(importReadLock.withPermits(1));
+    if (snapshot === null) return Option.none();
+
+    let recordedCwd: string | null = null;
+    for (const record of snapshot.records) {
+      recordedCwd = extractDecodedCwd(record);
+      if (recordedCwd !== null) break;
+    }
+    const expandedCwd = recordedCwd === null ? null : expandHomePath(recordedCwd.trim());
+    if (expandedCwd === null || !path.isAbsolute(expandedCwd)) return Option.none();
+
+    const thread = parseAgentSessionRecords(
+      {
+        source: listed.source,
+        providerInstanceId: listed.providerInstanceId,
+        fallbackSessionId: path.basename(listed.filePath, ".jsonl"),
+        lastActiveAtMs: identity.mtimeMs ?? listed.lastActiveAtMs,
+      },
+      snapshot.records,
+    );
+    // A replaced file can hold a different session than the one listed.
+    if (thread === null || thread.providerSessionId !== key.providerSessionId) {
+      return Option.none();
+    }
+    const cwd = path.resolve(expandedCwd);
+    const cwdStats = yield* statOption(cwd);
+    return Option.some({
+      thread,
+      cwd,
+      cwdExists: Option.isSome(cwdStats) && cwdStats.value.type === "Directory",
+      folderName: path.basename(cwd) || cwd,
+      source: {
+        ...identity,
+        provider: thread.source,
+        providerInstanceId: thread.providerInstanceId,
+        providerSessionId: thread.providerSessionId,
+      },
+    });
+  });
+
+  return AgentSessionScanner.of({ scan, recentThreads, listSessions, readSession });
 });
 
 export const layer = Layer.effect(AgentSessionScanner, make);

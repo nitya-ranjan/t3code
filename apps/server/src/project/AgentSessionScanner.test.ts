@@ -2612,6 +2612,258 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
       }),
     );
   });
+
+  describe("listSessions", () => {
+    const claudeRecords = (
+      cwd: string,
+      options: {
+        readonly sessionId: string;
+        readonly entrypoint?: string;
+        readonly aiTitle?: string;
+        readonly prompt?: string;
+      },
+    ) =>
+      [
+        {
+          type: "user",
+          cwd,
+          sessionId: options.sessionId,
+          ...(options.entrypoint === undefined ? {} : { entrypoint: options.entrypoint }),
+          isMeta: true,
+          message: {
+            role: "user",
+            content: "<local-command-caveat>ignored</local-command-caveat>",
+          },
+        },
+        {
+          type: "user",
+          cwd,
+          sessionId: options.sessionId,
+          ...(options.entrypoint === undefined ? {} : { entrypoint: options.entrypoint }),
+          message: { role: "user", content: options.prompt ?? "Fix the login page" },
+        },
+        {
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "On it." }] },
+        },
+        ...(options.aiTitle === undefined ? [] : [{ type: "ai-title", aiTitle: options.aiTitle }]),
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n") + "\n";
+
+    const codexRecords = (
+      cwd: string,
+      options: { readonly id: string; readonly source: string; readonly originator: string },
+    ) =>
+      [
+        {
+          timestamp: "2026-01-01T00:00:00.000Z",
+          type: "session_meta",
+          payload: { id: options.id, cwd, source: options.source, originator: options.originator },
+        },
+        {
+          type: "event_msg",
+          payload: { type: "user_message", message: "Add a dark mode toggle\nmore" },
+        },
+      ]
+        .map((record) => JSON.stringify(record))
+        .join("\n") + "\n";
+
+    const runListSessions = (input: ScannerTestInput) =>
+      Effect.gen(function* () {
+        const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+        return yield* scanner.listSessions;
+      }).pipe(Effect.provide(makeScannerTestLayer(input)));
+
+    it.effect("lists every session newest first with titles and automation flags", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const workspace = yield* makeTempDir("t3code-workspace-");
+        const interactiveId = "11111111-1111-4111-8111-111111111111";
+        const headlessId = "22222222-2222-4222-8222-222222222222";
+
+        yield* writeTranscript({
+          filePath: path.join(claudeHomePath, "projects", "-ws", `${interactiveId}.jsonl`),
+          contents: claudeRecords(workspace, {
+            sessionId: interactiveId,
+            entrypoint: "cli",
+            aiTitle: "Login page fix",
+          }),
+          // Older than the 30-day onboarding window: the picker still lists it.
+          mtimeMs: Date.parse("2025-06-01T00:00:00.000Z"),
+        });
+        yield* writeTranscript({
+          filePath: path.join(claudeHomePath, "projects", "-ws", `${headlessId}.jsonl`),
+          contents: claudeRecords(workspace, {
+            sessionId: headlessId,
+            entrypoint: "sdk-cli",
+            prompt: "You are the nightly steward.\nDo the review.",
+          }),
+          mtimeMs: Date.parse("2026-02-01T00:00:00.000Z"),
+        });
+        yield* writeTranscript({
+          filePath: path.join(
+            codexHomePath,
+            "sessions",
+            "2026",
+            "01",
+            "10",
+            "rollout-2026-01-10T00-00-00-a.jsonl",
+          ),
+          contents: codexRecords(workspace, {
+            id: "codex-interactive",
+            source: "cli",
+            originator: "codex_cli_rs",
+          }),
+          mtimeMs: Date.parse("2026-01-10T00:00:00.000Z"),
+        });
+        yield* writeTranscript({
+          filePath: path.join(
+            codexHomePath,
+            "sessions",
+            "2026",
+            "01",
+            "11",
+            "rollout-2026-01-11T00-00-00-b.jsonl",
+          ),
+          contents: codexRecords(workspace, {
+            id: "codex-exec",
+            source: "exec",
+            originator: "codex_exec",
+          }),
+          mtimeMs: Date.parse("2026-01-11T00:00:00.000Z"),
+        });
+
+        const listing = yield* runListSessions({ claudeHomePath, codexHomePath });
+
+        expect(
+          listing.sessions.map((session) => ({
+            provider: session.source,
+            id: session.providerSessionId,
+            title: session.title,
+            automated: session.automated,
+            cwd: session.cwd,
+            cwdExists: session.cwdExists,
+            lastActiveAtMs: session.lastActiveAtMs,
+          })),
+        ).toEqual([
+          {
+            provider: "claudeAgent",
+            id: headlessId,
+            title: "You are the nightly steward.",
+            automated: true,
+            cwd: workspace,
+            cwdExists: true,
+            lastActiveAtMs: Date.parse("2026-02-01T00:00:00.000Z"),
+          },
+          {
+            provider: "codex",
+            id: "codex-exec",
+            title: "Add a dark mode toggle",
+            automated: true,
+            cwd: workspace,
+            cwdExists: true,
+            lastActiveAtMs: Date.parse("2026-01-11T00:00:00.000Z"),
+          },
+          {
+            provider: "codex",
+            id: "codex-interactive",
+            title: "Add a dark mode toggle",
+            automated: false,
+            cwd: workspace,
+            cwdExists: true,
+            lastActiveAtMs: Date.parse("2026-01-10T00:00:00.000Z"),
+          },
+          {
+            provider: "claudeAgent",
+            id: interactiveId,
+            title: "Login page fix",
+            automated: false,
+            cwd: workspace,
+            cwdExists: true,
+            lastActiveAtMs: Date.parse("2025-06-01T00:00:00.000Z"),
+          },
+        ]);
+        expect(listing.truncated).toBe(false);
+      }),
+    );
+
+    it.effect("keeps sessions whose folder is gone and skips T3 Code's own worktrees", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const configBaseDir = yield* makeTempDir("t3code-config-");
+        const goneWorkspace = path.join(configBaseDir, "..", "t3code-deleted-workspace-xyz");
+        const t3Worktree = path.join(configBaseDir, "worktrees", "repo", "branch");
+
+        yield* writeTranscript({
+          filePath: path.join(claudeHomePath, "projects", "-gone", "a.jsonl"),
+          contents: claudeRecords(goneWorkspace, {
+            sessionId: "33333333-3333-4333-8333-333333333333",
+            entrypoint: "cli",
+          }),
+          mtimeMs: Date.parse("2026-01-01T00:00:00.000Z"),
+        });
+        yield* writeTranscript({
+          filePath: path.join(claudeHomePath, "projects", "-wt", "b.jsonl"),
+          contents: claudeRecords(t3Worktree, {
+            sessionId: "44444444-4444-4444-8444-444444444444",
+            entrypoint: "sdk-ts",
+          }),
+          mtimeMs: Date.parse("2026-01-02T00:00:00.000Z"),
+        });
+
+        const listing = yield* runListSessions({ claudeHomePath, codexHomePath, configBaseDir });
+
+        expect(
+          listing.sessions.map((session) => [session.providerSessionId, session.cwdExists]),
+        ).toEqual([["33333333-3333-4333-8333-333333333333", false]]);
+      }),
+    );
+
+    it.effect("reads a listed session's full history for import", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const workspace = yield* makeTempDir("t3code-workspace-");
+        const sessionId = "55555555-5555-4555-8555-555555555555";
+        yield* writeTranscript({
+          filePath: path.join(claudeHomePath, "projects", "-ws", `${sessionId}.jsonl`),
+          contents: claudeRecords(workspace, { sessionId, entrypoint: "cli", aiTitle: "Title" }),
+          mtimeMs: Date.parse("2025-01-01T00:00:00.000Z"),
+        });
+
+        const [found, missing] = yield* Effect.gen(function* () {
+          const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+          const key = {
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+            providerSessionId: sessionId,
+          };
+          return [
+            yield* scanner.readSession(key),
+            yield* scanner.readSession({ ...key, providerSessionId: "unknown" }),
+          ] as const;
+        }).pipe(Effect.provide(makeScannerTestLayer({ claudeHomePath, codexHomePath })));
+
+        expect(Option.isNone(missing)).toBe(true);
+        expect(Option.isSome(found)).toBe(true);
+        if (Option.isNone(found)) return;
+        expect(found.value.cwd).toBe(workspace);
+        expect(found.value.cwdExists).toBe(true);
+        expect(found.value.thread.providerSessionId).toBe(sessionId);
+        expect(found.value.thread.title).toBe("Title");
+        expect(found.value.thread.messages.map((message) => message.text)).toEqual([
+          "Fix the login page",
+          "On it.",
+        ]);
+        expect(found.value.source.providerSessionId).toBe(sessionId);
+      }),
+    );
+  });
 });
 
 describe("parseAgentSessionTranscript", () => {
