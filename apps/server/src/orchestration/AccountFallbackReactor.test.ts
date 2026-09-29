@@ -199,6 +199,8 @@ const makeHarness = Effect.fn("makeAccountFallbackHarness")(function* (options: 
   const domainEvents = yield* PubSub.unbounded<OrchestrationEvent>();
   const threads = yield* Ref.make(new Map([[options.thread.id, options.thread]]));
   const shellReads = yield* Queue.unbounded<ThreadId>();
+  const snapshotReads = yield* Queue.unbounded<void>();
+  const refreshCalls = yield* Ref.make(0);
   const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
   const webhooks = yield* Ref.make<ReadonlyArray<{ url: string | null; text: string }>>([]);
 
@@ -284,6 +286,10 @@ const makeHarness = Effect.fn("makeAccountFallbackHarness")(function* (options: 
     }),
     Layer.mock(ProviderRegistry)({
       getProviders: Effect.succeed(options.instances.map(makeProvider)),
+      refresh: () =>
+        Ref.update(refreshCalls, (count) => count + 1).pipe(
+          Effect.as(options.instances.map(makeProvider)),
+        ),
     }),
     Layer.mock(ProjectionSnapshotQuery)({
       getThreadShellById: (threadId) =>
@@ -292,6 +298,16 @@ const makeHarness = Effect.fn("makeAccountFallbackHarness")(function* (options: 
           Effect.tap(() => Queue.offer(shellReads, threadId)),
         ),
       getThreadDetailById: () => Effect.succeedSome(detail),
+      getShellSnapshot: () =>
+        Ref.get(threads).pipe(
+          Effect.map((current) => ({
+            snapshotSequence: 1,
+            projects: [],
+            threads: [...current.values()],
+            updatedAt: NOW,
+          })),
+          Effect.tap(() => Queue.offer(snapshotReads, undefined)),
+        ),
     }),
     Layer.mock(OrchestrationEngineService)({
       dispatch,
@@ -349,6 +365,8 @@ const makeHarness = Effect.fn("makeAccountFallbackHarness")(function* (options: 
     webhooks,
     threads,
     shellReads,
+    snapshotReads,
+    refreshCalls,
     domainEvents,
   };
 });
@@ -672,6 +690,199 @@ describe("AccountFallbackReactor", () => {
         settings: settingsWithChain([codexA.instanceId, codexB.instanceId]),
         instances: [codexA, codexB],
         thread: makeThread({ fallback: triedState }),
+      },
+    ),
+  );
+
+  const MINUTE_MS = 60 * 1000;
+  const waitingState = (overrides: Partial<ThreadFallbackState> = {}): ThreadFallbackState => ({
+    chainId: FallbackChainId.make("work"),
+    status: "waiting",
+    paused: false,
+    resumeAt: null,
+    waitingSince: NOW,
+    candidateInstanceId: null,
+    triedInstanceIds: [claudeWork.instanceId, claudePersonal.instanceId],
+    handoffTimes: [],
+    continuedToThreadId: null,
+    continuedFromThreadId: null,
+    ...overrides,
+  });
+
+  /** Waits for the sweep that runs at start (or after a clock move) and drains it. */
+  const awaitSweep = (harness: Effect.Success<ReturnType<typeof makeHarness>>) =>
+    Effect.gen(function* () {
+      const reactor = yield* AccountFallbackReactor.AccountFallbackReactor;
+      yield* Queue.take(harness.snapshotReads);
+      yield* reactor.drain;
+    });
+
+  const advanceAndSweep = (harness: Effect.Success<ReturnType<typeof makeHarness>>) =>
+    Effect.gen(function* () {
+      yield* TestClock.adjust("1 minute");
+      yield* awaitSweep(harness);
+    });
+
+  it.effect("resumes a waiting thread once its reset time arrives", () =>
+    run(
+      (harness) =>
+        Effect.gen(function* () {
+          yield* awaitSweep(harness);
+          yield* advanceAndSweep(harness);
+          assert.deepStrictEqual(yield* Ref.get(harness.commands), []);
+          assert.strictEqual(yield* Ref.get(harness.refreshCalls), 0);
+
+          yield* advanceAndSweep(harness);
+          const commands = yield* Ref.get(harness.commands);
+          assert.deepStrictEqual(
+            commands.map((command) => command.type),
+            ["thread.turn.start", "thread.fallback.update"],
+          );
+          assert.strictEqual(yield* Ref.get(harness.refreshCalls), 1);
+          const [turnStart] = commandsOfType(commands, "thread.turn.start");
+          assert.strictEqual(turnStart!.threadId, THREAD_ID);
+          assert.isTrue(turnStart!.commandId.startsWith("server:account-fallback:"));
+          assert.strictEqual(
+            turnStart!.message.text,
+            "You were interrupted by an account usage limit. Continue where you left off.",
+          );
+          assert.deepStrictEqual(turnStart!.modelSelection, {
+            instanceId: claudeWork.instanceId,
+            model: "claude-opus-4",
+          });
+          const [update] = commandsOfType(commands, "thread.fallback.update");
+          assert.strictEqual(update!.reason, "resumed");
+          assert.strictEqual(update!.fallback.status, "idle");
+          assert.strictEqual(update!.fallback.resumeAt, null);
+          assert.strictEqual(update!.fallback.waitingSince, null);
+          assert.deepStrictEqual(update!.fallback.triedInstanceIds, []);
+
+          // Idle now: later sweeps leave it alone.
+          yield* advanceAndSweep(harness);
+          assert.strictEqual((yield* Ref.get(harness.commands)).length, 2);
+        }),
+      {
+        settings: settingsWithChain([claudeWork.instanceId, claudePersonal.instanceId]),
+        instances: [
+          { ...claudeWork, exhaustedUntil: iso(NOW_MS + 2 * MINUTE_MS) },
+          { ...claudePersonal, exhaustedUntil: iso(NOW_MS + 3 * 60 * MINUTE_MS) },
+        ],
+        thread: makeThread({
+          fallback: waitingState({
+            resumeAt: iso(NOW_MS + 2 * MINUTE_MS),
+            candidateInstanceId: claudeWork.instanceId,
+          }),
+        }),
+      },
+    ),
+  );
+
+  it.effect("re-checks a wait with an unknown reset after 15 minutes", () =>
+    run(
+      (harness) =>
+        Effect.gen(function* () {
+          yield* awaitSweep(harness);
+          for (let minute = 1; minute < 15; minute += 1) {
+            yield* advanceAndSweep(harness);
+          }
+          assert.deepStrictEqual(yield* Ref.get(harness.commands), []);
+          assert.strictEqual(yield* Ref.get(harness.refreshCalls), 0);
+
+          yield* advanceAndSweep(harness);
+          const commands = yield* Ref.get(harness.commands);
+          assert.deepStrictEqual(
+            commands.map((command) => command.type),
+            ["thread.fallback.update"],
+          );
+          assert.strictEqual(yield* Ref.get(harness.refreshCalls), 1);
+          const [update] = commandsOfType(commands, "thread.fallback.update");
+          assert.strictEqual(update!.reason, "waiting");
+          assert.strictEqual(update!.fallback.status, "waiting");
+          assert.strictEqual(update!.fallback.resumeAt, iso(NOW_MS + 2 * 60 * MINUTE_MS));
+          assert.strictEqual(update!.fallback.waitingSince, iso(NOW_MS + 15 * MINUTE_MS));
+          assert.strictEqual(update!.fallback.candidateInstanceId, claudePersonal.instanceId);
+          assert.deepStrictEqual(update!.fallback.triedInstanceIds, []);
+        }),
+      {
+        settings: settingsWithChain([claudeWork.instanceId, claudePersonal.instanceId]),
+        instances: [
+          { ...claudeWork, exhaustedUntil: iso(NOW_MS + 3 * 60 * MINUTE_MS) },
+          { ...claudePersonal, exhaustedUntil: iso(NOW_MS + 2 * 60 * MINUTE_MS) },
+        ],
+        thread: makeThread({ fallback: waitingState() }),
+      },
+    ),
+  );
+
+  it.effect("resumes a thread already waiting at startup on the first sweep", () =>
+    run(
+      (harness) =>
+        Effect.gen(function* () {
+          yield* awaitSweep(harness);
+          const commands = yield* Ref.get(harness.commands);
+          assert.deepStrictEqual(
+            commands.map((command) => command.type),
+            [
+              "thread.create",
+              "thread.fallback.update",
+              "thread.turn.start",
+              "thread.fallback.update",
+            ],
+          );
+          assert.strictEqual(yield* Ref.get(harness.refreshCalls), 1);
+          const [create] = commandsOfType(commands, "thread.create");
+          assert.strictEqual(create!.modelSelection.instanceId, claudePersonal.instanceId);
+          assert.strictEqual(create!.worktreePath, "/work/tree");
+          const [turnStart] = commandsOfType(commands, "thread.turn.start");
+          assert.strictEqual(turnStart!.threadId, create!.threadId);
+          const [newUpdate, oldUpdate] = commandsOfType(commands, "thread.fallback.update");
+          assert.strictEqual(newUpdate!.threadId, create!.threadId);
+          assert.strictEqual(newUpdate!.reason, "resumed");
+          assert.strictEqual(newUpdate!.fallback.continuedFromThreadId, THREAD_ID);
+          assert.deepStrictEqual(newUpdate!.fallback.triedInstanceIds, []);
+          assert.strictEqual(oldUpdate!.threadId, THREAD_ID);
+          assert.strictEqual(oldUpdate!.reason, "resumed");
+          assert.strictEqual(oldUpdate!.fallback.status, "idle");
+          assert.strictEqual(oldUpdate!.fallback.continuedToThreadId, create!.threadId);
+          assert.deepStrictEqual(oldUpdate!.fallback.triedInstanceIds, []);
+          assert.strictEqual(oldUpdate!.fromInstanceId, claudeWork.instanceId);
+          assert.strictEqual(oldUpdate!.toInstanceId, claudePersonal.instanceId);
+        }),
+      {
+        settings: settingsWithChain([claudeWork.instanceId, claudePersonal.instanceId]),
+        instances: [
+          { ...claudeWork, exhaustedUntil: iso(NOW_MS + 3 * 60 * MINUTE_MS) },
+          claudePersonal,
+        ],
+        thread: makeThread({
+          fallback: waitingState({
+            resumeAt: iso(NOW_MS - 5 * MINUTE_MS),
+            waitingSince: iso(NOW_MS - 60 * MINUTE_MS),
+            candidateInstanceId: claudePersonal.instanceId,
+          }),
+        }),
+      },
+    ),
+  );
+
+  it.effect("does not resume a paused waiting thread", () =>
+    run(
+      (harness) =>
+        Effect.gen(function* () {
+          yield* awaitSweep(harness);
+          yield* advanceAndSweep(harness);
+          assert.deepStrictEqual(yield* Ref.get(harness.commands), []);
+          assert.strictEqual(yield* Ref.get(harness.refreshCalls), 0);
+        }),
+      {
+        settings: settingsWithChain([claudeWork.instanceId, claudePersonal.instanceId]),
+        instances: [claudeWork, claudePersonal],
+        thread: makeThread({
+          fallback: waitingState({
+            paused: true,
+            resumeAt: iso(NOW_MS - 5 * MINUTE_MS),
+          }),
+        }),
       },
     ),
   );

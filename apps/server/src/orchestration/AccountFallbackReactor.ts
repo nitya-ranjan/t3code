@@ -24,6 +24,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
@@ -60,6 +61,8 @@ export class AccountFallbackReactor extends Context.Service<
 const COMMAND_TAG = "account-fallback";
 const OWN_COMMAND_PREFIX = `server:${COMMAND_TAG}:`;
 const HOUR_MS = 60 * 60 * 1000;
+/** How long a wait with an unknown reset lasts before it is checked again. */
+const UNKNOWN_RESET_RECHECK_MS = 15 * 60 * 1000;
 const MAX_HANDLED_LIMITS = 512;
 const SWITCH_ACCOUNT_TEXT =
   "You were interrupted by an account usage limit. Continue where you left off.";
@@ -72,7 +75,8 @@ type Job =
       readonly instanceId: ProviderInstanceId;
       readonly resetsAt: string | null;
     }
-  | { readonly _tag: "UserTurn"; readonly threadId: ThreadId };
+  | { readonly _tag: "UserTurn"; readonly threadId: ThreadId }
+  | { readonly _tag: "Sweep" };
 
 /** The blocking usage limit an event reports, if any. */
 function blockingUsageLimit(event: ProviderRuntimeEvent): RuntimeUsageLimit | null {
@@ -94,6 +98,26 @@ function initialFallbackState(chainId: FallbackChainId): ThreadFallbackState {
     continuedToThreadId: null,
     continuedFromThreadId: null,
   };
+}
+
+const isoToMillis = (iso: string): number | null => {
+  const parsed = DateTime.make(iso);
+  return Option.isSome(parsed) ? DateTime.toEpochMillis(parsed.value) : null;
+};
+
+/**
+ * Whether a waiting thread is due for a resume check: its reset time has
+ * passed, or its reset is unknown and it has waited long enough to look again.
+ */
+function isResumeDue(fallback: ThreadFallbackState, nowMs: number): boolean {
+  if (fallback.status !== "waiting" || fallback.paused) return false;
+  if (fallback.resumeAt !== null) {
+    const resumeMs = isoToMillis(fallback.resumeAt);
+    return resumeMs === null || resumeMs <= nowMs;
+  }
+  if (fallback.waitingSince === null) return true;
+  const sinceMs = isoToMillis(fallback.waitingSince);
+  return sinceMs === null || nowMs - sinceMs >= UNKNOWN_RESET_RECHECK_MS;
 }
 
 const appendUnique = <A>(values: ReadonlyArray<A>, value: A): ReadonlyArray<A> =>
@@ -163,8 +187,11 @@ export const make = Effect.gen(function* () {
   /** Candidates for every chain instance, keyed by instance id. */
   const buildCandidates = Effect.fn("AccountFallbackReactor.buildCandidates")(function* (input: {
     readonly chain: ReadonlyArray<ProviderInstanceId>;
-    readonly limitedInstanceId: ProviderInstanceId;
-    readonly limitedResetsAt: string | null;
+    /** The instance that just reported a limit; null when resuming. */
+    readonly limited: {
+      readonly instanceId: ProviderInstanceId;
+      readonly resetsAt: string | null;
+    } | null;
     readonly nowMs: number;
   }) {
     const providers = yield* providerRegistry.getProviders;
@@ -180,8 +207,8 @@ export const make = Effect.gen(function* () {
         usable: info !== null && info.enabled && provider?.auth.status === "authenticated",
         continuationKey: info?.continuationIdentity.continuationKey ?? "",
         exhaustedUntil:
-          instanceId === input.limitedInstanceId
-            ? (input.limitedResetsAt ??
+          instanceId === input.limited?.instanceId
+            ? (input.limited.resetsAt ??
               exhaustedUntil ??
               DateTime.formatIso(DateTime.makeUnsafe(input.nowMs + HOUR_MS)))
             : exhaustedUntil,
@@ -197,9 +224,12 @@ export const make = Effect.gen(function* () {
     readonly fromInstanceId: ProviderInstanceId;
     readonly toInstanceId: ProviderInstanceId;
     readonly reason: ThreadFallbackReason;
+    /** A resume clears the tried accounts: every account may be tried again. */
+    readonly resume: boolean;
   }) {
     const { thread } = input;
     const now = DateTime.formatIso(yield* DateTime.now);
+    const changesAccount = input.toInstanceId !== input.fromInstanceId;
     yield* engine.dispatch({
       type: "thread.turn.start",
       commandId: yield* serverCommandId,
@@ -228,8 +258,11 @@ export const make = Effect.gen(function* () {
         resumeAt: null,
         waitingSince: null,
         candidateInstanceId: null,
-        triedInstanceIds: appendUnique(current.triedInstanceIds, input.fromInstanceId),
-        handoffTimes: [...current.handoffTimes, now],
+        triedInstanceIds: input.resume
+          ? []
+          : appendUnique(current.triedInstanceIds, input.fromInstanceId),
+        // Picking up again on the same account is not a hand-off.
+        handoffTimes: changesAccount ? [...current.handoffTimes, now] : current.handoffTimes,
       }),
     });
   });
@@ -244,6 +277,8 @@ export const make = Effect.gen(function* () {
       readonly toInstanceId: ProviderInstanceId;
       readonly toInfo: ProviderInstanceRoutingInfo | null;
       readonly reason: ThreadFallbackReason;
+      /** A resume clears the tried accounts: every account may be tried again. */
+      readonly resume: boolean;
     }) {
       const { thread } = input;
       const now = DateTime.formatIso(yield* DateTime.now);
@@ -292,7 +327,9 @@ export const make = Effect.gen(function* () {
           resumeAt: null,
           waitingSince: null,
           candidateInstanceId: null,
-          triedInstanceIds: appendUnique(previous?.triedInstanceIds ?? [], input.fromInstanceId),
+          triedInstanceIds: input.resume
+            ? []
+            : appendUnique(previous?.triedInstanceIds ?? [], input.fromInstanceId),
           handoffTimes: [...(previous?.handoffTimes ?? []), now],
           continuedFromThreadId: thread.id,
         }),
@@ -323,7 +360,9 @@ export const make = Effect.gen(function* () {
           resumeAt: null,
           waitingSince: null,
           candidateInstanceId: null,
-          triedInstanceIds: appendUnique(current.triedInstanceIds, input.fromInstanceId),
+          triedInstanceIds: input.resume
+            ? []
+            : appendUnique(current.triedInstanceIds, input.fromInstanceId),
           continuedToThreadId: newThreadId,
         }),
       });
@@ -336,6 +375,8 @@ export const make = Effect.gen(function* () {
     readonly chainId: FallbackChainId;
     readonly resumeAt: string | null;
     readonly candidateInstanceId: ProviderInstanceId | null;
+    /** A resume clears the tried accounts: every account may be tried again. */
+    readonly resume: boolean;
   }) {
     const now = DateTime.formatIso(yield* DateTime.now);
     yield* updateFallback({
@@ -348,6 +389,7 @@ export const make = Effect.gen(function* () {
         resumeAt: input.resumeAt,
         waitingSince: now,
         candidateInstanceId: input.candidateInstanceId,
+        ...(input.resume ? { triedInstanceIds: [] } : {}),
       }),
     });
   });
@@ -395,8 +437,7 @@ export const make = Effect.gen(function* () {
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const { candidates, infos } = yield* buildCandidates({
       chain: chain.instanceIds,
-      limitedInstanceId: job.instanceId,
-      limitedResetsAt: job.resetsAt,
+      limited: { instanceId: job.instanceId, resetsAt: job.resetsAt },
       nowMs,
     });
     const decision: FallbackDecision = decideFallback({
@@ -420,6 +461,7 @@ export const make = Effect.gen(function* () {
           fromInstanceId: job.instanceId,
           toInstanceId: decision.instanceId,
           reason: "switched-account",
+          resume: false,
         });
         yield* notify(
           settings,
@@ -437,6 +479,7 @@ export const make = Effect.gen(function* () {
           toInstanceId: decision.instanceId,
           toInfo,
           reason: "handed-off",
+          resume: false,
         });
         yield* notify(
           settings,
@@ -450,6 +493,7 @@ export const make = Effect.gen(function* () {
           chainId: chain.chainId,
           resumeAt: decision.resumeAt,
           candidateInstanceId: decision.candidateInstanceId,
+          resume: false,
         });
         const chainName =
           settings.accountFallback.chains[chain.chainId]?.displayName ?? chain.chainId;
@@ -477,13 +521,145 @@ export const make = Effect.gen(function* () {
     });
   });
 
+  /** Try a waiting thread again, walking its chain from the start. */
+  const resumeThread = Effect.fn("AccountFallbackReactor.resumeThread")(function* (
+    threadId: ThreadId,
+  ) {
+    // Re-read: a pause or user turn may have landed since the snapshot.
+    const thread = yield* readThread(threadId);
+    if (thread === null || thread.archivedAt !== null) return;
+    const fallback = thread.fallback ?? null;
+    if (fallback === null) return;
+    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+    if (!isResumeDue(fallback, nowMs)) return;
+
+    const settings = yield* settingsService.getSettings;
+    const chain = resolveFallbackChain(settings, thread.projectId);
+    if (chain === null) {
+      // The chain was removed or deselected: nothing left to wait for.
+      yield* updateFallback({
+        threadId: thread.id,
+        chainId: fallback.chainId,
+        reason: "cancelled",
+        change: (current) => ({
+          ...current,
+          status: "idle",
+          resumeAt: null,
+          waitingSince: null,
+          candidateInstanceId: null,
+          triedInstanceIds: [],
+        }),
+      });
+      return;
+    }
+
+    const currentInstanceId = thread.modelSelection.instanceId;
+    const { candidates, infos } = yield* buildCandidates({
+      chain: chain.instanceIds,
+      limited: null,
+      nowMs,
+    });
+    const currentContinuationKey =
+      candidates.get(currentInstanceId)?.continuationKey ??
+      (yield* instanceInfo(currentInstanceId))?.continuationIdentity.continuationKey ??
+      "";
+    const decision = decideFallback({
+      mode: "resume",
+      chain: chain.instanceIds,
+      currentInstanceId,
+      currentContinuationKey,
+      candidates,
+      tried: new Set(),
+      handoffTimes: fallback.handoffTimes,
+      maxHandoffsPerHour: settings.accountFallback.maxHandoffsPerThreadPerHour,
+      nowMs,
+    });
+
+    switch (decision._tag) {
+      case "SwitchAccount":
+        yield* switchAccount({
+          thread,
+          chainId: chain.chainId,
+          fromInstanceId: currentInstanceId,
+          toInstanceId: decision.instanceId,
+          reason: "resumed",
+          resume: true,
+        });
+        return;
+      case "ContinueInNewThread":
+        yield* continueInNewThread({
+          thread,
+          chainId: chain.chainId,
+          fromInstanceId: currentInstanceId,
+          fromAccount: accountName(
+            currentInstanceId,
+            infos.get(currentInstanceId) ?? (yield* instanceInfo(currentInstanceId)),
+          ),
+          toInstanceId: decision.instanceId,
+          toInfo: infos.get(decision.instanceId) ?? null,
+          reason: "resumed",
+          resume: true,
+        });
+        return;
+      case "Wait":
+        // `waitingSince: now` makes an unknown reset re-check in 15 minutes.
+        yield* park({
+          threadId: thread.id,
+          chainId: chain.chainId,
+          resumeAt: decision.resumeAt,
+          candidateInstanceId: decision.candidateInstanceId,
+          resume: true,
+        });
+        return;
+    }
+  });
+
+  /** Resume every waiting thread whose reset is due. */
+  const sweep = Effect.fn("AccountFallbackReactor.sweep")(function* () {
+    const snapshot = yield* snapshots.getShellSnapshot();
+    const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+    const due = snapshot.threads.filter(
+      (thread) =>
+        thread.archivedAt === null &&
+        thread.fallback !== undefined &&
+        thread.fallback !== null &&
+        isResumeDue(thread.fallback, nowMs),
+    );
+    if (due.length === 0) return;
+    // Fresh usage for every account before deciding, once per sweep.
+    yield* providerRegistry.refresh();
+    for (const thread of due) {
+      yield* resumeThread(thread.id).pipe(
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            Effect.logWarning("account fallback could not resume a waiting thread", {
+              threadId: thread.id,
+              cause: Cause.pretty(cause),
+            }),
+        ),
+      );
+    }
+  });
+
+  const runJob = (job: Job) => {
+    switch (job._tag) {
+      case "Limit":
+        return handleLimit(job);
+      case "UserTurn":
+        return handleUserTurn(job.threadId);
+      case "Sweep":
+        return sweep();
+    }
+  };
+
   const processJob = (job: Job) =>
-    (job._tag === "Limit" ? handleLimit(job) : handleUserTurn(job.threadId)).pipe(
+    runJob(job).pipe(
       Effect.catchCauseIf(
         (cause) => !Cause.hasInterruptsOnly(cause),
         (cause) =>
           Effect.logWarning("account fallback failed", {
-            threadId: job.threadId,
+            ...(job._tag === "Sweep" ? {} : { threadId: job.threadId }),
             job: job._tag,
             cause: Cause.pretty(cause),
           }),
@@ -530,6 +706,13 @@ export const make = Effect.gen(function* () {
     );
     yield* forkParked(Stream.runForEach(source, processRuntimeEvent));
     yield* forkParked(Stream.runForEach(domainEvents, processDomainEvent));
+    // Runs at activation too, so threads left waiting across a restart resume.
+    yield* forkParked(
+      Effect.gen(function* () {
+        yield* worker.enqueue({ _tag: "Sweep" });
+        yield* worker.drain;
+      }).pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.asVoid),
+    );
   });
 
   return { start, drain: worker.drain } satisfies AccountFallbackReactor["Service"];
