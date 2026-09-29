@@ -78,5 +78,18 @@ with up to 100,000 input records. Run import again to continue a large batch.
 Completed conversations are not imported again. You can continue without the
 remaining history.
 
+### Import older or individual conversations
+
+To pick conversations yourself, including ones older than 30 days, open
+**Settings → General → Import sessions**. Choose the computer, then tick the
+Claude Code and Codex conversations to import. Each one joins the project for
+the folder it ran in, and T3 Code creates that project if it does not exist yet.
+
+Headless runs, such as `claude -p` scripts and `codex exec`, are hidden until you
+turn on **Show automated runs**. Conversations that T3 Code already has, whether
+imported or started in T3 Code, link to their thread instead of importing again.
+A conversation whose folder was deleted cannot be imported, because the agent
+can only continue it from the folder it started in.
+
 You can continue without configuring agents or importing projects, or return to an earlier step
 using the setup progress bar. Navigation pauses while an import is running.
