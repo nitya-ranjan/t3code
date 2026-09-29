@@ -3,7 +3,9 @@ import {
   ChatAttachment,
   ComposerContextId,
   CheckpointRef,
+  CommandId,
   EventId,
+  FallbackChainId,
   MessageId,
   ProjectId,
   ThreadId,
@@ -12,6 +14,7 @@ import {
   TurnId,
   ProviderInstanceId,
   OrchestrationMessageContext,
+  type ThreadFallbackState,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -23,7 +26,14 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
-import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
+import {
+  ORCHESTRATION_PROJECTOR_NAMES,
+  OrchestrationProjectionPipelineLive,
+} from "./ProjectionPipeline.ts";
+import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
+import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
+import { ServerConfig } from "../../config.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
@@ -487,6 +497,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pinOrderKey: "gm",
           activeOrderKey: "hq",
           autoSettleDisabledAt: null,
+          fallback: null,
           titleRegeneration: null,
           titleState: null,
           deletedAt: null,
@@ -614,6 +625,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pinOrderKey: "gm",
           activeOrderKey: "hq",
           autoSettleDisabledAt: null,
+          fallback: null,
           titleRegeneration: null,
           titleState: null,
           session: {
@@ -3766,6 +3778,138 @@ projectionSnapshotLayer("ProjectionSnapshotQuery activities by kind", (it) => {
         [["setup-live", "worktree-setup", { phase: "running" }]],
       );
       assert.deepEqual(yield* query.listActivitiesByKind("nope"), []);
+    }),
+  );
+});
+
+it.layer(
+  Layer.fresh(
+    OrchestrationProjectionSnapshotQueryLive.pipe(
+      Layer.provideMerge(OrchestrationProjectionPipelineLive),
+      Layer.provideMerge(OrchestrationEventStoreLive),
+      Layer.provide(ThreadBackgroundLiveness.layer),
+      Layer.provide(ThreadPlanProgress.layer),
+      Layer.provideMerge(RepositoryIdentityResolver.layer),
+      Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-fallback-shell-" })),
+      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(NodeServices.layer),
+    ),
+  ),
+)("thread fallback projection", (it) => {
+  it.effect("reads fallback state back after thread.fallback-updated", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const later = "2026-01-01T01:00:00.000Z";
+      const projectId = asProjectId("project-fallback");
+      const threadId = ThreadId.make("thread-fallback");
+      const eventFields = {
+        occurredAt: now,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+      };
+
+      yield* projectionPipeline.projectEvent(
+        yield* eventStore.append({
+          ...eventFields,
+          type: "project.created",
+          eventId: asEventId("evt-fallback-project"),
+          aggregateKind: "project",
+          aggregateId: projectId,
+          payload: {
+            projectId,
+            title: "Fallback project",
+            workspaceRoot: "/tmp/project-fallback",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      );
+      yield* projectionPipeline.projectEvent(
+        yield* eventStore.append({
+          ...eventFields,
+          type: "thread.created",
+          eventId: asEventId("evt-fallback-thread"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          payload: {
+            threadId,
+            projectId,
+            title: "Fallback thread",
+            modelSelection: { instanceId: ProviderInstanceId.make("claude-a"), model: "opus" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      );
+
+      const beforeShell = yield* snapshotQuery.getThreadShellById(threadId);
+      assert.equal(Option.getOrThrow(beforeShell).fallback ?? null, null);
+
+      const fallback: ThreadFallbackState = {
+        chainId: FallbackChainId.make("chain-1"),
+        status: "waiting",
+        paused: false,
+        resumeAt: "2026-01-01T05:00:00.000Z",
+        waitingSince: later,
+        candidateInstanceId: ProviderInstanceId.make("claude-a"),
+        triedInstanceIds: [ProviderInstanceId.make("claude-a")],
+        handoffTimes: [later],
+        continuedToThreadId: null,
+        continuedFromThreadId: null,
+      };
+      yield* projectionPipeline.projectEvent(
+        yield* eventStore.append({
+          ...eventFields,
+          occurredAt: later,
+          type: "thread.fallback-updated",
+          eventId: asEventId("evt-fallback-updated"),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          payload: {
+            threadId,
+            fallback,
+            reason: "waiting",
+            fromInstanceId: ProviderInstanceId.make("claude-a"),
+            updatedAt: later,
+          },
+        }),
+      );
+
+      const shell = Option.getOrThrow(yield* snapshotQuery.getThreadShellById(threadId));
+      assert.deepEqual(shell.fallback, fallback);
+      const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
+      assert.deepEqual(
+        shellSnapshot.threads.find((thread) => thread.id === threadId)?.fallback,
+        fallback,
+      );
+      const readModel = yield* snapshotQuery.getCommandReadModel();
+      assert.deepEqual(
+        readModel.threads.find((thread) => thread.id === threadId)?.fallback,
+        fallback,
+      );
+
+      // An undecodable stored value reads as no fallback state instead of
+      // failing the whole snapshot.
+      yield* sql`UPDATE projection_threads SET fallback_json = '{"chainId":' WHERE thread_id = ${threadId}`;
+      const corrupted = Option.getOrThrow(yield* snapshotQuery.getThreadShellById(threadId));
+      assert.equal(corrupted.fallback, null);
+      const corruptedSnapshot = yield* snapshotQuery.getShellSnapshot();
+      assert.equal(
+        corruptedSnapshot.threads.find((thread) => thread.id === threadId)?.fallback,
+        null,
+      );
     }),
   );
 });

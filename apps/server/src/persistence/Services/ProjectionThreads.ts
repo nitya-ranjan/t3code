@@ -51,6 +51,9 @@ export const ProjectionThread = Schema.Struct({
   pinOrderKey: Schema.optional(Schema.NullOr(Schema.String)),
   activeOrderKey: Schema.optional(Schema.NullOr(Schema.String)),
   autoSettleDisabledAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  // JSON-encoded ThreadFallbackState. Kept as text so an undecodable value
+  // degrades to "no fallback state" on read instead of failing the row.
+  fallbackJson: Schema.optional(Schema.NullOr(Schema.String)),
   titleRegenerationRequestId: Schema.optional(Schema.NullOr(CommandId)),
   titleRegenerationStartedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),

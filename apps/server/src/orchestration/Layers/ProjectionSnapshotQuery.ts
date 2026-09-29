@@ -30,6 +30,7 @@ import {
   ModelSelection,
   ProjectId,
   ThreadLinkedPullRequest,
+  ThreadFallbackState,
   ThreadTitleState,
   ThreadId,
   ThreadPullRequestSnapshot,
@@ -134,6 +135,11 @@ const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
     branchPullRequest: Schema.NullOr(Schema.fromJsonString(ThreadLinkedPullRequest)),
   }),
 );
+const decodeThreadFallbackOption = Schema.decodeOption(Schema.fromJsonString(ThreadFallbackState));
+// Fallback state is advisory: a missing or undecodable value reads as none
+// instead of failing the whole snapshot.
+const decodeThreadFallback = (json: string | null | undefined): ThreadFallbackState | null =>
+  json == null ? null : Option.getOrNull(decodeThreadFallbackOption(json));
 const ProjectionThreadActivityDbRowSchema = ProjectionThreadActivity.mapFields(
   Struct.assign({
     payload: Schema.fromJsonString(Schema.Unknown),
@@ -589,6 +595,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pin_order_key AS "pinOrderKey",
           active_order_key AS "activeOrderKey",
           auto_settle_disabled_at AS "autoSettleDisabledAt",
+          fallback_json AS "fallbackJson",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",
@@ -637,6 +644,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pin_order_key AS "pinOrderKey",
           active_order_key AS "activeOrderKey",
           auto_settle_disabled_at AS "autoSettleDisabledAt",
+          fallback_json AS "fallbackJson",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",
@@ -712,6 +720,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pin_order_key AS "pinOrderKey",
           active_order_key AS "activeOrderKey",
           auto_settle_disabled_at AS "autoSettleDisabledAt",
+          fallback_json AS "fallbackJson",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",
@@ -1316,6 +1325,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           pin_order_key AS "pinOrderKey",
           active_order_key AS "activeOrderKey",
           auto_settle_disabled_at AS "autoSettleDisabledAt",
+          fallback_json AS "fallbackJson",
           title_regeneration_request_id AS "titleRegenerationRequestId",
           title_regeneration_started_at AS "titleRegenerationStartedAt",
           latest_user_message_at AS "latestUserMessageAt",
@@ -2392,6 +2402,7 @@ pending_approval_requests AS (
                 pinOrderKey: row.pinOrderKey ?? null,
                 activeOrderKey: row.activeOrderKey ?? null,
                 autoSettleDisabledAt: row.autoSettleDisabledAt ?? null,
+                fallback: decodeThreadFallback(row.fallbackJson),
                 titleRegeneration: mapTitleRegeneration(row),
                 titleState: row.titleState,
                 deletedAt: row.deletedAt,
@@ -2638,6 +2649,7 @@ pending_approval_requests AS (
                   pinOrderKey: row.pinOrderKey ?? null,
                   activeOrderKey: row.activeOrderKey ?? null,
                   autoSettleDisabledAt: row.autoSettleDisabledAt ?? null,
+                  fallback: decodeThreadFallback(row.fallbackJson),
                   titleRegeneration: mapTitleRegeneration(row),
                   titleState: row.titleState,
                   deletedAt: row.deletedAt,
@@ -2799,6 +2811,7 @@ pending_approval_requests AS (
                         pinOrderKey: row.pinOrderKey ?? null,
                         activeOrderKey: row.activeOrderKey ?? null,
                         autoSettleDisabledAt: row.autoSettleDisabledAt ?? null,
+                        fallback: decodeThreadFallback(row.fallbackJson),
                         titleRegeneration: mapTitleRegeneration(row),
                         titleState: row.titleState,
                         session: sessionByThread.get(row.threadId) ?? null,
@@ -2985,6 +2998,7 @@ pending_approval_requests AS (
                   pinOrderKey: row.pinOrderKey ?? null,
                   activeOrderKey: row.activeOrderKey ?? null,
                   autoSettleDisabledAt: row.autoSettleDisabledAt ?? null,
+                  fallback: decodeThreadFallback(row.fallbackJson),
                   titleRegeneration: mapTitleRegeneration(row),
                   titleState: row.titleState,
                   session: sessionByThread.get(row.threadId) ?? null,
@@ -3334,6 +3348,7 @@ pending_approval_requests AS (
         pinOrderKey: threadRow.value.pinOrderKey ?? null,
         activeOrderKey: threadRow.value.activeOrderKey ?? null,
         autoSettleDisabledAt: threadRow.value.autoSettleDisabledAt ?? null,
+        fallback: decodeThreadFallback(threadRow.value.fallbackJson),
         titleRegeneration: mapTitleRegeneration(threadRow.value),
         titleState: threadRow.value.titleState,
         session: Option.isSome(sessionRow) ? mapSessionRow(sessionRow.value) : null,
@@ -3636,6 +3651,7 @@ pending_approval_requests AS (
         pinOrderKey: threadRow.value.pinOrderKey ?? null,
         activeOrderKey: threadRow.value.activeOrderKey ?? null,
         autoSettleDisabledAt: threadRow.value.autoSettleDisabledAt ?? null,
+        fallback: decodeThreadFallback(threadRow.value.fallbackJson),
         titleRegeneration: mapTitleRegeneration(threadRow.value),
         titleState: threadRow.value.titleState,
         deletedAt: null,

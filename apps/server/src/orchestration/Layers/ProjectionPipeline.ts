@@ -5,6 +5,7 @@ import {
   type ChatAttachment,
   type OrchestrationEvent,
   type OrchestrationSessionStatus,
+  ThreadFallbackState,
   ThreadId,
 } from "@t3tools/contracts";
 import { compareDateTimeStrings } from "@t3tools/shared/dateTime";
@@ -335,6 +336,7 @@ function retainProjectionProposedPlansAfterRevert(
 }
 
 const decodeQuestionAttachmentAnswer = Schema.decodeUnknownOption(UserInputAttachmentAnswerPayload);
+const encodeThreadFallbackJson = Schema.encodeSync(Schema.fromJsonString(ThreadFallbackState));
 
 function collectThreadAttachmentRelativePaths(
   threadId: string,
@@ -634,6 +636,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             pinOrderKey: null,
             activeOrderKey: null,
             autoSettleDisabledAt: null,
+            fallbackJson: null,
             titleRegenerationRequestId: null,
             titleRegenerationStartedAt: null,
             latestUserMessageAt: null,
@@ -794,6 +797,20 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             autoSettleDisabledAt: event.payload.autoSettleDisabledAt,
             updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.fallback-updated": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            fallbackJson: encodeThreadFallbackJson(event.payload.fallback),
           });
           return;
         }
