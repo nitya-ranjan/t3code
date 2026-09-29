@@ -3,7 +3,6 @@ import {
   ChatAttachment,
   ComposerContextId,
   CheckpointRef,
-  CommandId,
   EventId,
   FallbackChainId,
   MessageId,

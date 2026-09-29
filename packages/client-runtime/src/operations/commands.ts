@@ -43,6 +43,8 @@ export type PinThreadInput = CommandInput<"thread.pin">;
 export type UnpinThreadInput = CommandInput<"thread.unpin">;
 export type ReorderPinnedThreadInput = CommandInput<"thread.pin.reorder">;
 export type SetThreadAutoSettleInput = CommandInput<"thread.auto-settle.set">;
+export type SetThreadFallbackPausedInput = CommandInput<"thread.fallback.set-paused">;
+export type CancelThreadFallbackWaitInput = CommandInput<"thread.fallback.cancel-wait">;
 export type ReorderActiveThreadInput = CommandInput<"thread.active.reorder">;
 export type UpdateThreadMetadataInput = CommandInput<"thread.meta.update">;
 export type LinkThreadPullRequestInput = CommandInput<"thread.pull-request.link">;
@@ -236,6 +238,28 @@ export const setThreadAutoSettle: (input: SetThreadAutoSettleInput) => CommandEf
     commandId: yield* commandId(input),
   });
 });
+
+export const setThreadFallbackPaused: (input: SetThreadFallbackPausedInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.setThreadFallbackPaused")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.fallback.set-paused",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
+
+export const cancelThreadFallbackWait: (input: CancelThreadFallbackWaitInput) => CommandEffect =
+  Effect.fn("EnvironmentCommands.cancelThreadFallbackWait")(function* (input) {
+    const metadata = yield* timestampedCommandMetadata(input);
+    return yield* dispatch({
+      ...input,
+      type: "thread.fallback.cancel-wait",
+      commandId: metadata.commandId,
+      createdAt: metadata.createdAt,
+    });
+  });
 
 export const reorderPinnedThread: (input: ReorderPinnedThreadInput) => CommandEffect = Effect.fn(
   "EnvironmentCommands.reorderPinnedThread",

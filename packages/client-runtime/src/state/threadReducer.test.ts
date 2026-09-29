@@ -5,13 +5,14 @@ import {
   CommandId,
   ComposerContextId,
   EventId,
+  FallbackChainId,
   MessageId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import type { OrchestrationThread } from "@t3tools/contracts";
+import type { OrchestrationThread, ThreadFallbackState } from "@t3tools/contracts";
 
 import { applyThreadDetailEvent } from "./threadReducer.ts";
 
@@ -326,6 +327,42 @@ describe("applyThreadDetailEvent", () => {
       expect(on.kind).toBe("updated");
       if (on.kind === "updated") {
         expect(on.thread.autoSettleDisabledAt).toBeNull();
+      }
+    });
+  });
+
+  describe("thread.fallback-updated", () => {
+    it("stores the thread's fallback state without bumping updatedAt", () => {
+      const fallback: ThreadFallbackState = {
+        chainId: FallbackChainId.make("chain-1"),
+        status: "waiting",
+        paused: false,
+        resumeAt: "2026-04-01T09:00:00.000Z",
+        waitingSince: "2026-04-01T05:00:00.000Z",
+        candidateInstanceId: ProviderInstanceId.make("claude-a"),
+        triedInstanceIds: [ProviderInstanceId.make("claude-a")],
+        handoffTimes: [],
+        continuedToThreadId: null,
+        continuedFromThreadId: null,
+      };
+      const result = applyThreadDetailEvent(baseThread, {
+        ...baseEventFields,
+        sequence: 7,
+        occurredAt: "2026-04-01T05:00:00.000Z",
+        aggregateKind: "thread",
+        aggregateId: ThreadId.make("thread-1"),
+        type: "thread.fallback-updated",
+        payload: {
+          threadId: ThreadId.make("thread-1"),
+          fallback,
+          reason: "waiting",
+          updatedAt: "2026-04-01T05:00:00.000Z",
+        },
+      });
+      expect(result.kind).toBe("updated");
+      if (result.kind === "updated") {
+        expect(result.thread.fallback).toEqual(fallback);
+        expect(result.thread.updatedAt).toBe(baseThread.updatedAt);
       }
     });
   });

@@ -132,6 +132,7 @@ export function applyThreadDetailEvent(
           unsettledAt: null,
           activeOrderKey: null,
           autoSettleDisabledAt: null,
+          fallback: null,
           snoozedUntil: null,
           snoozedAt: null,
           deletedAt: null,
@@ -258,6 +259,12 @@ export function applyThreadDetailEvent(
           autoSettleDisabledAt: event.payload.autoSettleDisabledAt,
           updatedAt: event.payload.updatedAt,
         },
+      };
+
+    case "thread.fallback-updated":
+      return {
+        kind: "updated",
+        thread: { ...thread, fallback: event.payload.fallback },
       };
 
     // ── Thread metadata ─────────────────────────────────────────────
