@@ -60,6 +60,7 @@ export class AccountFallbackReactor extends Context.Service<
 const COMMAND_TAG = "account-fallback";
 const OWN_COMMAND_PREFIX = `server:${COMMAND_TAG}:`;
 const HOUR_MS = 60 * 60 * 1000;
+const MAX_HANDLED_LIMITS = 512;
 const SWITCH_ACCOUNT_TEXT =
   "You were interrupted by an account usage limit. Continue where you left off.";
 
@@ -108,6 +109,9 @@ export const make = Effect.gen(function* () {
   const webhook = yield* FallbackWebhook;
   const serverConfig = yield* ServerConfig;
   const crypto = yield* Crypto.Crypto;
+
+  // Limits already handled, oldest first. Only touched by the worker fiber.
+  const handledLimits = new Set<string>();
 
   const serverCommandId = crypto.randomUUIDv4.pipe(
     Effect.map((uuid) => CommandId.make(`${OWN_COMMAND_PREFIX}${uuid}`)),
@@ -206,7 +210,8 @@ export const make = Effect.gen(function* () {
         text: SWITCH_ACCOUNT_TEXT,
         attachments: [],
       },
-      modelSelection: { instanceId: input.toInstanceId, model: thread.modelSelection.model },
+      // Same driver and home: the model and its options still apply.
+      modelSelection: { ...thread.modelSelection, instanceId: input.toInstanceId },
       runtimeMode: thread.runtimeMode,
       interactionMode: thread.interactionMode,
       createdAt: now,
@@ -354,9 +359,16 @@ export const make = Effect.gen(function* () {
     if (thread === null || thread.archivedAt !== null) return;
     const fallback = thread.fallback ?? null;
     if (fallback?.paused === true || fallback?.status === "waiting") return;
-    // A second report of the same limit (warning, then error) for an account
-    // this thread already moved away from.
-    if (fallback?.triedInstanceIds.includes(job.instanceId) === true) return;
+    // A provider can report one limit twice (warning, then error). Handle
+    // each reporting turn once; without a turn id there is nothing to key on.
+    if (job.turnId !== undefined) {
+      const key = `${job.threadId}\u0000${job.turnId}\u0000${job.instanceId}`;
+      if (handledLimits.has(key)) return;
+      handledLimits.add(key);
+      if (handledLimits.size > MAX_HANDLED_LIMITS) {
+        handledLimits.delete(handledLimits.values().next().value!);
+      }
+    }
 
     const settings = yield* settingsService.getSettings;
     const chain = resolveFallbackChain(settings, thread.projectId);

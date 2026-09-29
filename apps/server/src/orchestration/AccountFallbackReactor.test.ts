@@ -170,16 +170,17 @@ function makeProvider(fixture: InstanceFixture): ServerProvider {
 function limitEvent(
   instanceId: ProviderInstanceId,
   resetsAt: string | null,
-  threadId: ThreadId = THREAD_ID,
+  options: { readonly turnId?: TurnId; readonly type?: "runtime.warning" | "runtime.error" } = {},
 ): ProviderRuntimeEvent {
+  const turnId = options.turnId ?? TURN_ID;
   return {
-    eventId: EventId.make(`limit-${instanceId}`),
+    eventId: EventId.make(`limit-${instanceId}-${turnId}-${options.type ?? "runtime.error"}`),
     provider: ProviderDriverKind.make("claudeAgent"),
     providerInstanceId: instanceId,
-    threadId,
-    turnId: TURN_ID,
+    threadId: THREAD_ID,
+    turnId,
     createdAt: NOW,
-    type: "runtime.error",
+    type: options.type ?? "runtime.error",
     payload: {
       message: "Usage limit reached.",
       usageLimit: { instanceId, blocking: true, resetsAt },
@@ -476,6 +477,7 @@ describe("AccountFallbackReactor", () => {
           assert.deepStrictEqual(turnStart!.modelSelection, {
             instanceId: codexB.instanceId,
             model: "gpt-5",
+            options: [{ id: "reasoningEffort", value: "high" }],
           });
           assert.strictEqual(
             turnStart!.message.text,
@@ -499,7 +501,13 @@ describe("AccountFallbackReactor", () => {
       {
         settings: settingsWithChain([codexA.instanceId, codexB.instanceId], "Codex"),
         instances: [codexA, codexB],
-        thread: makeThread({ modelSelection: { instanceId: codexA.instanceId, model: "gpt-5" } }),
+        thread: makeThread({
+          modelSelection: {
+            instanceId: codexA.instanceId,
+            model: "gpt-5",
+            options: [{ id: "reasoningEffort", value: "high" }],
+          },
+        }),
       },
     ),
   );
@@ -570,19 +578,33 @@ describe("AccountFallbackReactor", () => {
     ),
   );
 
-  it.effect("sends one webhook line per decision and ignores a duplicate limit", () =>
+  it.effect("handles a turn's limit once, and a later turn's limit again", () =>
     run(
       (harness) =>
         Effect.gen(function* () {
-          yield* harness.publishLimit(limitEvent(codexA.instanceId, null));
-          // The same exhausted account reporting again (warning then error)
-          // must not start a second switch.
-          yield* harness.publishLimit(limitEvent(codexA.instanceId, null));
+          // One limit reported twice for the same turn: one switch, one line.
+          yield* harness.publishLimit(
+            limitEvent(codexA.instanceId, null, { type: "runtime.warning" }),
+          );
+          yield* harness.publishLimit(
+            limitEvent(codexA.instanceId, null, { type: "runtime.error" }),
+          );
           assert.strictEqual((yield* Ref.get(harness.webhooks)).length, 1);
           assert.strictEqual(
             commandsOfType(yield* Ref.get(harness.commands), "thread.turn.start").length,
             1,
           );
+          // Back on the already-tried account (say, after a resume) with no
+          // user turn in between, a new turn's limit is still handled.
+          yield* harness.publishLimit(
+            limitEvent(codexA.instanceId, null, { turnId: TurnId.make("turn-2") }),
+          );
+          const commands = yield* Ref.get(harness.commands);
+          assert.strictEqual(commandsOfType(commands, "thread.turn.interrupt").length, 2);
+          const turnStarts = commandsOfType(commands, "thread.turn.start");
+          assert.strictEqual(turnStarts.length, 2);
+          assert.strictEqual(turnStarts[1]!.modelSelection?.instanceId, codexB.instanceId);
+          assert.strictEqual((yield* Ref.get(harness.webhooks)).length, 2);
         }),
       {
         settings: settingsWithChain([codexA.instanceId, codexB.instanceId], "Codex"),
