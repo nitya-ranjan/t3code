@@ -210,25 +210,45 @@ function codexUsageLimitNextStep(rateLimitReachedType: string | null | undefined
 }
 
 /**
+ * The exhausted window that has yet to reset, latest reset first, or undefined.
+ * `atIso` is the stopping event's timestamp, not the wall clock.
+ */
+export function latestExhaustedWindow(snapshot: CodexRateLimitSnapshot | undefined, atIso: string) {
+  const atMs = Date.parse(atIso);
+  const windows = snapshot && Number.isFinite(atMs) ? codexRateLimitsToWindows(snapshot) : [];
+  let latest: { readonly window: (typeof windows)[number]; readonly resetMs: number } | undefined;
+  for (const window of windows) {
+    if (window.usedPercent < 100 || !window.resetsAt) continue;
+    const resetMs = Date.parse(window.resetsAt);
+    if (!Number.isFinite(resetMs) || resetMs <= atMs || (latest && resetMs <= latest.resetMs)) {
+      continue;
+    }
+    latest = { window, resetMs };
+  }
+  return latest;
+}
+
+/** ISO reset time of the window a usage-limit stop is waiting on, or null. */
+export function latestExhaustedResetAt(
+  snapshot: CodexRateLimitSnapshot | undefined,
+  atIso: string,
+): string | null {
+  const latest = latestExhaustedWindow(snapshot, atIso);
+  return latest ? DateTime.formatIso(DateTime.makeUnsafe(latest.resetMs)) : null;
+}
+
+/**
  * The message a usage-limit stop shows instead of the provider sentence, which
  * on a Business workspace blames credits for a window that simply ran out. The
- * window named is the exhausted one that has yet to reset, latest first; `atIso`
- * is the stopping event's timestamp, not the wall clock.
+ * window named is the exhausted one that has yet to reset, latest first.
  */
 export function codexUsageLimitMessage(
   snapshot: CodexRateLimitSnapshot | undefined,
   atIso: string,
 ): string {
-  const atMs = Date.parse(atIso);
-  const windows = snapshot && Number.isFinite(atMs) ? codexRateLimitsToWindows(snapshot) : [];
-  let reset = "";
-  let latestResetMs = Number.NEGATIVE_INFINITY;
-  for (const window of windows) {
-    if (window.usedPercent < 100 || !window.resetsAt) continue;
-    const resetMs = Date.parse(window.resetsAt);
-    if (!Number.isFinite(resetMs) || resetMs <= atMs || resetMs <= latestResetMs) continue;
-    latestResetMs = resetMs;
-    reset = ` The ${window.kind} limit resets in ${formatCodexUsageLimitWait(resetMs - atMs)}.`;
-  }
+  const latest = latestExhaustedWindow(snapshot, atIso);
+  const reset = latest
+    ? ` The ${latest.window.kind} limit resets in ${formatCodexUsageLimitWait(latest.resetMs - Date.parse(atIso))}.`
+    : "";
   return `Codex usage limit reached.${reset}${codexUsageLimitNextStep(snapshot?.rateLimitReachedType)}`;
 }

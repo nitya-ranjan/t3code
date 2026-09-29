@@ -27,6 +27,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 import { assert, describe, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -2574,12 +2575,13 @@ describe("ClaudeAdapterLive", () => {
       yield* adapter.sendTurn({ threadId: session.threadId, input: "hello", attachments: [] });
 
       const nowMs = yield* Clock.currentTimeMillis;
+      const resetsAtSeconds = Math.floor(nowMs / 1000) + 2 * 60 * 60;
       harness.query.emit({
         type: "rate_limit_event",
         rate_limit_info: {
           status: "rejected",
           rateLimitType: "five_hour",
-          resetsAt: Math.floor(nowMs / 1000) + 2 * 60 * 60,
+          resetsAt: resetsAtSeconds,
         },
         session_id: "sdk-session-limit",
         uuid: "rate-limit-rejected",
@@ -2594,12 +2596,19 @@ describe("ClaudeAdapterLive", () => {
         uuid: "result-limit",
       } as unknown as SDKMessage);
 
-      const payload = completedTurn(Array.from(yield* Fiber.join(runtimeEventsFiber)));
+      const events = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const payload = completedTurn(events);
       assert.equal(payload.state, "failed");
       assert.equal(
         payload.errorMessage,
         "Claude usage limit reached. Send the message again once the limit resets.",
       );
+      const runtimeError = events.find((event) => event.type === "runtime.error");
+      assert.deepEqual(runtimeError?.payload.usageLimit, {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        blocking: true,
+        resetsAt: DateTime.formatIso(DateTime.makeUnsafe(resetsAtSeconds * 1000)),
+      });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -4696,6 +4705,14 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(
         runtimeEvents.find((event) => event.type === "runtime.warning")?.payload.detail,
         rateLimitInfo,
+      );
+      assert.deepEqual(
+        runtimeEvents.find((event) => event.type === "runtime.warning")?.payload.usageLimit,
+        {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          blocking: true,
+          resetsAt: DateTime.formatIso(DateTime.makeUnsafe(rateLimitInfo.resetsAt * 1000)),
+        },
       );
       // The raw telemetry event still flows for every copy.
       assert.equal(

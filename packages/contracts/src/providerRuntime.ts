@@ -801,8 +801,17 @@ const ToolDeniedPayload = Schema.Struct({
 });
 export type ToolDeniedPayload = typeof ToolDeniedPayload.Type;
 
+/** Set when a provider stopped the turn because an account ran out of usage. */
+export const RuntimeUsageLimit = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  blocking: Schema.Literal(true),
+  resetsAt: Schema.NullOr(IsoDateTime),
+});
+export type RuntimeUsageLimit = typeof RuntimeUsageLimit.Type;
+
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
+  usageLimit: Schema.optional(RuntimeUsageLimit),
   detail: Schema.optional(Schema.Unknown),
 });
 export type RuntimeWarningPayload = typeof RuntimeWarningPayload.Type;
@@ -811,6 +820,7 @@ const RuntimeErrorPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   code: Schema.optional(TrimmedNonEmptyStringSchema),
   class: Schema.optional(RuntimeErrorClass),
+  usageLimit: Schema.optional(RuntimeUsageLimit),
   detail: Schema.optional(Schema.Unknown),
 });
 export type RuntimeErrorPayload = typeof RuntimeErrorPayload.Type;

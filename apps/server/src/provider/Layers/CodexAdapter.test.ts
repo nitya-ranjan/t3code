@@ -2995,6 +2995,15 @@ usageLimitLayer("CodexAdapterLive usage limits", (it) => {
         completed?.payload.errorMessage,
         "Codex usage limit reached. The session limit resets in 3h 20m. Send the message again once the limit resets.",
       );
+      const error = events.find((event) => event.type === "runtime.error");
+      NodeAssert.ok(error?.type === "runtime.error");
+      NodeAssert.equal(error.payload.usageLimit?.instanceId, "codex");
+      NodeAssert.equal(error.payload.usageLimit?.blocking, true);
+      // The reset instant is the stopping event's time plus the 3h 20m the message names.
+      NodeAssert.equal(
+        Date.parse(error.payload.usageLimit?.resetsAt ?? "") - Date.parse(error.createdAt),
+        (3 * 3_600 + 20 * 60) * 1000,
+      );
     }),
   );
 
@@ -3058,6 +3067,12 @@ usageLimitLayer("CodexAdapterLive usage limits", (it) => {
       );
       const runtimeError = events.find((event) => event.type === "runtime.error");
       NodeAssert.equal(runtimeError?.payload.message, expected);
+      NodeAssert.ok(runtimeError?.type === "runtime.error");
+      NodeAssert.deepStrictEqual(runtimeError.payload.usageLimit, {
+        instanceId: "codex",
+        blocking: true,
+        resetsAt: null,
+      });
       const completed = events.find((event) => event.type === "turn.completed");
       NodeAssert.equal(completed?.payload.errorMessage, expected);
     }),

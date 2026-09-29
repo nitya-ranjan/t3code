@@ -75,6 +75,7 @@ import {
   type CodexRateLimitSnapshot,
   codexRateLimitsToUpdate,
   codexUsageLimitMessage,
+  latestExhaustedResetAt,
   mergeCodexRateLimits,
 } from "./codexUsageLimits.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
@@ -2451,6 +2452,11 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                   payload: {
                     message: usageLimitMessage,
                     class: "provider_error",
+                    usageLimit: {
+                      instanceId: boundInstanceId,
+                      blocking: true,
+                      resetsAt: latestExhaustedResetAt(rateLimits, event.createdAt),
+                    },
                     ...(turnError.message ? { detail: turnError.message } : {}),
                   },
                 };

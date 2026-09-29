@@ -27,7 +27,11 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
-import { type ClaudeScopedLimitNames, claudeRateLimitEventToUpdate } from "./claudeUsageLimits.ts";
+import {
+  type ClaudeScopedLimitNames,
+  claudeRateLimitEventToUpdate,
+  isoFromEpochSeconds,
+} from "./claudeUsageLimits.ts";
 import {
   ApprovalRequestId,
   classifyTaskAgentKind,
@@ -42,6 +46,7 @@ import {
   ProviderItemId,
   type ProviderRuntimeEvent,
   type ProviderRuntimeTurnStatus,
+  type RuntimeUsageLimit,
   type ProviderSendTurnInput,
   type ProviderSession,
   type ThreadTokenUsageSnapshot,
@@ -276,6 +281,8 @@ interface ClaudeTurnState {
   nextSyntheticAssistantBlockIndex: number;
   authenticationFailureMessage: string | undefined;
   rejectedRateLimitTypes: Set<string>;
+  /** Reset instant of the latest blocking window; null when the SDK gave none. */
+  blockingUsageLimitResetsAt: string | null | undefined;
   latestAssistantRateLimited: boolean;
   emittedThinkingText: boolean;
   readonly thinkingSnapshotIds: Set<string>;
@@ -2492,6 +2499,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context: ClaudeSessionContext,
     message: string,
     cause?: unknown,
+    usageLimit?: RuntimeUsageLimit,
   ) {
     if (cause !== undefined) {
       void cause;
@@ -2508,6 +2516,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       payload: {
         message,
         class: "provider_error",
+        ...(usageLimit ? { usageLimit } : {}),
         ...(cause !== undefined ? { detail: cause } : {}),
       },
       providerRefs: nativeProviderRefs(context),
@@ -2518,6 +2527,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     context: ClaudeSessionContext,
     message: string,
     detail?: unknown,
+    usageLimit?: RuntimeUsageLimit,
   ) {
     const turnState = context.turnState;
     const stamp = yield* makeEventStamp();
@@ -2530,6 +2540,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       ...(turnState ? { turnId: asCanonicalTurnId(turnState.turnId) } : {}),
       payload: {
         message,
+        ...(usageLimit ? { usageLimit } : {}),
         ...(detail !== undefined ? { detail } : {}),
       },
       providerRefs: nativeProviderRefs(context),
@@ -3386,6 +3397,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         nextSyntheticAssistantBlockIndex: -1,
         authenticationFailureMessage: undefined,
         rejectedRateLimitTypes: new Set(),
+        blockingUsageLimitResetsAt: undefined,
         latestAssistantRateLimited: false,
         emittedThinkingText: false,
         thinkingSnapshotIds: new Set(),
@@ -3486,15 +3498,30 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     const turn = context.turnState;
+    const usageLimited =
+      turn !== undefined &&
+      turn.authenticationFailureMessage === undefined &&
+      (turn.rejectedRateLimitTypes.size > 0 || turn.latestAssistantRateLimited);
     const failureHint =
       turn?.authenticationFailureMessage ??
-      (turn && (turn.rejectedRateLimitTypes.size > 0 || turn.latestAssistantRateLimited)
+      (usageLimited
         ? "Claude usage limit reached. Send the message again once the limit resets."
         : undefined);
     const { status, errorMessage } = resultOutcome(message, failureHint);
 
     if (status === "failed") {
-      yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.");
+      yield* emitRuntimeError(
+        context,
+        errorMessage ?? "Claude turn failed.",
+        undefined,
+        usageLimited
+          ? {
+              instanceId: boundInstanceId,
+              blocking: true,
+              resetsAt: turn?.blockingUsageLimitResetsAt ?? null,
+            }
+          : undefined,
+      );
     }
 
     yield* completeTurn(context, status, errorMessage, message);
@@ -4106,8 +4133,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // Current blocking evidence is independent of whether its warning has
         // already been shown. A recovery can omit or advance the reset time;
         // its window type remains stable without clearing another window.
-        if (blocked) context.turnState.rejectedRateLimitTypes.add(limitType);
-        else if (
+        if (blocked) {
+          context.turnState.rejectedRateLimitTypes.add(limitType);
+          // An implausible reset time becomes null rather than throwing.
+          context.turnState.blockingUsageLimitResetsAt =
+            isoFromEpochSeconds(rateLimitInfo.resetsAt) ?? null;
+        } else if (
           rateLimitInfo.status === "allowed" ||
           rateLimitInfo.status === "allowed_warning" ||
           overageAllowed
@@ -4132,7 +4163,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             Date.parse(stamp.createdAt),
             names,
           );
-          yield* emitRuntimeWarning(context, notice, rateLimitInfo);
+          yield* emitRuntimeWarning(context, notice, rateLimitInfo, {
+            instanceId: boundInstanceId,
+            blocking: true,
+            resetsAt: context.turnState.blockingUsageLimitResetsAt ?? null,
+          });
         }
       }
       return;
@@ -5212,6 +5247,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         nextSyntheticAssistantBlockIndex: -1,
         authenticationFailureMessage: undefined,
         rejectedRateLimitTypes: new Set(),
+        blockingUsageLimitResetsAt: undefined,
         latestAssistantRateLimited: false,
         emittedThinkingText: false,
         thinkingSnapshotIds: new Set(),
