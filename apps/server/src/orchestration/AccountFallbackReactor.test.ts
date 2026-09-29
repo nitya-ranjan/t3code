@@ -824,6 +824,36 @@ describe("AccountFallbackReactor", () => {
     ),
   );
 
+  it.effect("re-waits quietly when the reset is still unknown", () =>
+    run(
+      (harness) =>
+        Effect.gen(function* () {
+          yield* awaitSweep(harness);
+          const commands = yield* Ref.get(harness.commands);
+          assert.deepStrictEqual(
+            commands.map((command) => command.type),
+            ["thread.fallback.update"],
+          );
+          const [update] = commandsOfType(commands, "thread.fallback.update");
+          assert.strictEqual(update!.reason, "waiting");
+          assert.strictEqual(update!.fallback.resumeAt, null);
+          assert.strictEqual(update!.fallback.waitingSince, NOW);
+          assert.deepStrictEqual(update!.fallback.triedInstanceIds, []);
+          assert.deepStrictEqual(yield* Ref.get(harness.webhooks), []);
+        }),
+      {
+        settings: settingsWithChain([claudeWork.instanceId, claudePersonal.instanceId]),
+        instances: [
+          { ...claudeWork, authenticated: false },
+          { ...claudePersonal, authenticated: false },
+        ],
+        thread: makeThread({
+          fallback: waitingState({ waitingSince: iso(NOW_MS - 15 * MINUTE_MS) }),
+        }),
+      },
+    ),
+  );
+
   it.effect("resumes a thread already waiting at startup on the first sweep", () =>
     run(
       (harness) =>

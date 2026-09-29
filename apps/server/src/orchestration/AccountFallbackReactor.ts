@@ -648,7 +648,10 @@ export const make = Effect.gen(function* () {
           candidateInstanceId: decision.candidateInstanceId,
           resume: true,
         });
-        yield* notifyWaiting(settings, thread.title, chain.chainId, decision.resumeAt);
+        // Re-checking an unchanged wait (say, unknown → unknown) stays quiet.
+        if (decision.resumeAt !== fallback.resumeAt) {
+          yield* notifyWaiting(settings, thread.title, chain.chainId, decision.resumeAt);
+        }
         return;
     }
   });
