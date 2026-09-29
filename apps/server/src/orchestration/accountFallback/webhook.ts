@@ -9,7 +9,7 @@ export class FallbackWebhook extends Context.Service<
   {
     readonly notify: (url: string | null, text: string) => Effect.Effect<void>;
   }
->()("t3/orchestration/accountFallback/FallbackWebhook") {
+>()("t3/orchestration/accountFallback/webhook/FallbackWebhook") {
   static readonly layer = Layer.effect(
     FallbackWebhook,
     Effect.gen(function* () {

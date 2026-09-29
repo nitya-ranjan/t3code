@@ -64,10 +64,8 @@ describe("FallbackWebhook", () => {
 
   it.effect("resolves without error when the client fails", () =>
     Effect.gen(function* () {
-      yield* Effect.gen(function* () {
-        const webhook = yield* FallbackWebhook;
-        yield* webhook.notify("https://hooks.example.test/x", "text");
-      }).pipe(Effect.provide(FallbackWebhook.layer.pipe(Layer.provide(failingClient))));
-    }),
+      const webhook = yield* FallbackWebhook;
+      yield* webhook.notify("https://hooks.example.test/x", "text");
+    }).pipe(Effect.provide(FallbackWebhook.layer.pipe(Layer.provide(failingClient)))),
   );
 });
