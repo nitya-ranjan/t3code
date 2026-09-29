@@ -2615,6 +2615,51 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("does not tag a listed failure as a usage limit after a rejected window", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: session.threadId, input: "hello", attachments: [] });
+      const nowMs = yield* Clock.currentTimeMillis;
+      harness.query.emit({
+        type: "rate_limit_event",
+        rate_limit_info: {
+          status: "rejected",
+          rateLimitType: "five_hour",
+          resetsAt: Math.floor(nowMs / 1000) + 2 * 60 * 60,
+        },
+        session_id: "sdk-session-limit",
+        uuid: "rate-limit-rejected",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["tool crashed"],
+        session_id: "sdk-session-limit",
+        uuid: "result-crash",
+      } as unknown as SDKMessage);
+
+      const events = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const runtimeError = events.find((event) => event.type === "runtime.error");
+      assert.equal(runtimeError?.payload.message, "tool crashed");
+      assert.equal(runtimeError?.payload.usageLimit, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   const usageLimitMessage =
     "Claude usage limit reached. Send the message again once the limit resets.";
   const genericApiErrorMessage = "Claude gave up after repeated API errors.";
@@ -2692,6 +2737,9 @@ describe("ClaudeAdapterLive", () => {
       const errors = events.filter((event) => event.type === "runtime.error");
       assert.equal(errors.length, 1);
       assert.equal(errors[0]?.payload.message, expected);
+      // Only the usage-limit message is a blocking limit; a different failure
+      // after a rejected window must not trigger fallback.
+      assert.equal(errors[0]?.payload.usageLimit !== undefined, expected === usageLimitMessage);
       assert.equal(completedTurn(events).state, "failed");
       assert.equal(completedTurn(events).errorMessage, expected);
     }).pipe(

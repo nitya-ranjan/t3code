@@ -3514,7 +3514,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         context,
         errorMessage ?? "Claude turn failed.",
         undefined,
-        usageLimited
+        // Only when the usage-limit hint is the message shown; another listed or
+        // terminal error must not read as a blocking limit.
+        usageLimited && errorMessage === failureHint
           ? {
               instanceId: boundInstanceId,
               blocking: true,
