@@ -19,6 +19,7 @@ import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
+import * as DesktopFleetConnectionsImport from "./DesktopFleetConnectionsImport.ts";
 import * as DesktopLifecycle from "./DesktopLifecycle.ts";
 import * as DesktopLinuxUrlHandler from "./DesktopLinuxUrlHandler.ts";
 import * as DesktopObservability from "./DesktopObservability.ts";
@@ -177,6 +178,20 @@ const bootstrap = Effect.gen(function* () {
       : { assetDirectory: environment.clientAssetsDir }),
     clerkFrontendApiHostname: DesktopClerk.desktopClerkFrontendApiHostname,
   });
+  // Fleet-only (nitya fork): fold t3-fleet's connections file into the catalog before the
+  // renderer can read it. Never fails startup.
+  yield* DesktopFleetConnectionsImport.importFleetConnections(environment.stateDir).pipe(
+    Effect.flatMap((result) =>
+      result._tag === "NoFile"
+        ? Effect.void
+        : result._tag === "Imported"
+          ? logBootstrapInfo("fleet connections import", { result })
+          : logBootstrapWarning("fleet connections import skipped", { result }),
+    ),
+    Effect.catchCause((cause) =>
+      logBootstrapWarning("fleet connections import failed", { cause: Cause.pretty(cause) }),
+    ),
+  );
   yield* installDesktopIpcHandlers();
   yield* logBootstrapInfo("bootstrap ipc handlers registered");
 
