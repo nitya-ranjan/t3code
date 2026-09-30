@@ -22,7 +22,8 @@ import * as Schema from "effect/Schema";
 import * as DesktopConnectionCatalogStore from "./DesktopConnectionCatalogStore.ts";
 
 const FleetConnection = Schema.Struct({
-  environmentId: Schema.String,
+  // A blank or untrimmed id fails here, so that one entry is skipped instead of the import.
+  environmentId: EnvironmentId,
   label: Schema.String,
   httpBaseUrl: Schema.String,
   wsBaseUrl: Schema.String,
@@ -30,6 +31,11 @@ const FleetConnection = Schema.Struct({
 });
 type FleetConnection = typeof FleetConnection.Type;
 const decodeFleetConnection = Schema.decodeUnknownOption(FleetConnection);
+
+/** One entry per environment; the last one in the file wins. */
+const dedupeByEnvironment = (entries: readonly FleetConnection[]): FleetConnection[] => [
+  ...new Map(entries.map((e) => [e.environmentId, e])).values(),
+];
 // Entries are decoded one by one so a single bad entry does not reject the whole file.
 const decodeFleetFile = Schema.decodeEffect(
   Schema.fromJsonString(
@@ -63,7 +69,8 @@ export type ImportResult =
   | { readonly _tag: "Imported"; readonly count: number }
   | { readonly _tag: "Invalid"; readonly reason: string }
   | { readonly _tag: "CatalogUnreadable"; readonly reason: string }
-  | { readonly _tag: "EncryptionUnavailable" };
+  | { readonly _tag: "EncryptionUnavailable" }
+  | { readonly _tag: "SaveFailed"; readonly reason: string };
 
 const fleetConnectionId = (environmentId: string) => `bearer:${environmentId}`;
 
@@ -73,10 +80,11 @@ const fleetConnectionId = (environmentId: string) => `bearer:${environmentId}`;
  */
 export function mergeFleetConnections(
   doc: ConnectionCatalogDocument | undefined,
-  entries: readonly FleetConnection[],
+  fleetEntries: readonly FleetConnection[],
 ): ConnectionCatalogDocument {
+  const entries = dedupeByEnvironment(fleetEntries);
   const base = doc ?? EMPTY_CONNECTION_CATALOG_DOCUMENT;
-  const environments = new Set(entries.map((e) => e.environmentId));
+  const environments = new Set<string>(entries.map((e) => e.environmentId));
   const replaced = (x: { readonly environmentId: string }) => environments.has(x.environmentId);
   // Credentials carry no environment id, so drop those whose connection we replace.
   const droppedConnectionIds = new Set([
@@ -91,7 +99,7 @@ export function mergeFleetConnections(
       ...entries.map(
         (e) =>
           new BearerConnectionTarget({
-            environmentId: EnvironmentId.make(e.environmentId),
+            environmentId: e.environmentId,
             label: e.label,
             connectionId: fleetConnectionId(e.environmentId),
           }),
@@ -103,7 +111,7 @@ export function mergeFleetConnections(
         (e) =>
           new BearerConnectionProfile({
             connectionId: fleetConnectionId(e.environmentId),
-            environmentId: EnvironmentId.make(e.environmentId),
+            environmentId: e.environmentId,
             label: e.label,
             httpBaseUrl: e.httpBaseUrl,
             wsBaseUrl: e.wsBaseUrl,
@@ -141,8 +149,8 @@ export const importFleetConnections = Effect.fn("desktop.fleetConnections.import
   if (fleetFile._tag === "Failure") {
     return { _tag: "Invalid", reason: "expected a {version: 1, connections: [...]} JSON document" };
   }
-  const entries = fleetFile.success.connections.flatMap((item) =>
-    Option.toArray(decodeFleetConnection(item)),
+  const entries = dedupeByEnvironment(
+    fleetFile.success.connections.flatMap((item) => Option.toArray(decodeFleetConnection(item))),
   );
   if (entries.length === 0) return { _tag: "Invalid", reason: "no valid connections" };
 
@@ -160,9 +168,16 @@ export const importFleetConnections = Effect.fn("desktop.fleetConnections.import
     }
     doc = decoded.success;
   }
-  const encoded = yield* encodeCatalog(mergeFleetConnections(doc, entries)).pipe(Effect.orDie);
-  const saved = yield* store.set(encoded).pipe(Effect.orElseSucceed(() => false));
-  if (!saved) return { _tag: "EncryptionUnavailable" };
+  // A SchemaError could quote catalog values (credentials) into logs; keep only a fixed message.
+  const encoded = yield* encodeCatalog(mergeFleetConnections(doc, entries)).pipe(
+    Effect.mapError(() => new Error("could not encode the merged connection catalog")),
+    Effect.orDie,
+  );
+  const saved = yield* store.set(encoded).pipe(Effect.result);
+  if (saved._tag === "Failure") {
+    return { _tag: "SaveFailed", reason: "could not write the connection catalog" };
+  }
+  if (!saved.success) return { _tag: "EncryptionUnavailable" };
 
   const previous = yield* fs.readFileString(ledgerPath).pipe(
     Effect.flatMap(decodeLedger),
@@ -170,7 +185,7 @@ export const importFleetConnections = Effect.fn("desktop.fleetConnections.import
     Effect.orElseSucceed(() => []),
   );
   const importedAt = DateTime.formatIso(yield* DateTime.now);
-  const fresh = new Set(entries.map((e) => e.environmentId));
+  const fresh = new Set<string>(entries.map((e) => e.environmentId));
   const ledger = yield* encodeLedger({
     version: 1,
     connections: [

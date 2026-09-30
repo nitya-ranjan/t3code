@@ -19,7 +19,7 @@ import * as DesktopConnectionCatalogStore from "./DesktopConnectionCatalogStore.
 import { importFleetConnections, mergeFleetConnections } from "./DesktopFleetConnectionsImport.ts";
 
 const entry = (id: string, token: string) => ({
-  environmentId: id,
+  environmentId: EnvironmentId.make(id),
   label: `server-${id}`,
   httpBaseUrl: `https://${id}.example.ts.net`,
   wsBaseUrl: `wss://${id}.example.ts.net`,
@@ -29,7 +29,7 @@ const entry = (id: string, token: string) => ({
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const fleetFile = (connections: ReadonlyArray<unknown>) => encodeJson({ version: 1, connections });
 
-const makeStore = (initial: string | null, encryption = true) =>
+const makeStore = (initial: string | null, save: "ok" | "unavailable" | "fails" = "ok") =>
   Effect.gen(function* () {
     const ref = yield* Ref.make<string | null>(initial);
     const layer = Layer.succeed(
@@ -37,7 +37,17 @@ const makeStore = (initial: string | null, encryption = true) =>
       DesktopConnectionCatalogStore.DesktopConnectionCatalogStore.of({
         get: Ref.get(ref).pipe(Effect.map(Option.fromNullishOr)),
         set: (catalog: string) =>
-          encryption ? Ref.set(ref, catalog).pipe(Effect.as(true)) : Effect.succeed(false),
+          save === "ok"
+            ? Ref.set(ref, catalog).pipe(Effect.as(true))
+            : save === "unavailable"
+              ? Effect.succeed(false)
+              : Effect.fail(
+                  new DesktopConnectionCatalogStore.DesktopConnectionCatalogStoreWriteError({
+                    operation: "write-temporary-file",
+                    path: "/nowhere",
+                    cause: new Error("disk full"),
+                  }),
+                ),
         clear: Ref.set(ref, null),
       }),
     );
@@ -71,40 +81,64 @@ describe("mergeFleetConnections", () => {
   });
 
   it("replaces a hand-paired connection for the same environment under another connection id", () => {
-    const environmentId = EnvironmentId.make("e1");
-    const paired = {
-      ...EMPTY_CONNECTION_CATALOG_DOCUMENT,
-      targets: [
-        new BearerConnectionTarget({ environmentId, label: "paired", connectionId: "paired-xyz" }),
-      ],
-      profiles: [
-        new BearerConnectionProfile({
-          connectionId: "paired-xyz",
+    const handPaired = (id: string) => {
+      const environmentId = EnvironmentId.make(id);
+      const connectionId = `paired-${id}`;
+      return {
+        target: new BearerConnectionTarget({ environmentId, label: "paired", connectionId }),
+        profile: new BearerConnectionProfile({
+          connectionId,
           environmentId,
           label: "paired",
           httpBaseUrl: "https://old.example",
           wsBaseUrl: "wss://old.example",
         }),
-      ],
-      credentials: [
-        {
-          connectionId: "paired-xyz",
-          credential: new BearerConnectionCredential({ token: "paired-token" }),
+        credential: {
+          connectionId,
+          credential: new BearerConnectionCredential({ token: `paired-token-${id}` }),
         },
-      ],
+      };
+    };
+    const e1 = handPaired("e1");
+    const e2 = handPaired("e2");
+    const paired = {
+      ...EMPTY_CONNECTION_CATALOG_DOCUMENT,
+      targets: [e1.target, e2.target],
+      profiles: [e1.profile, e2.profile],
+      credentials: [e1.credential, e2.credential],
     };
     const merged = mergeFleetConnections(paired, [entry("e1", "fleet-token")]);
-    const forE1 = <T extends { environmentId: string }>(xs: readonly T[]) =>
-      xs.filter((x) => x.environmentId === "e1");
-    const targets = forE1(merged.targets);
-    const profiles = forE1(merged.profiles);
-    assert.strictEqual(targets.length, 1);
-    assert.strictEqual(profiles.length, 1);
+    const forEnv = (id: string) => ({
+      targets: merged.targets.filter((x) => x.environmentId === id),
+      profiles: merged.profiles.filter((x) => x.environmentId === id),
+    });
+    const fleet = forEnv("e1");
+    assert.strictEqual(fleet.targets.length, 1);
+    assert.strictEqual(fleet.profiles.length, 1);
+    assert.strictEqual((fleet.targets[0] as BearerConnectionTarget).connectionId, "bearer:e1");
+    assert.strictEqual(fleet.profiles[0]!.connectionId, "bearer:e1");
+    const e1Credentials = merged.credentials.filter((c) => c.connectionId !== "paired-e2");
+    assert.strictEqual(e1Credentials.length, 1);
+    assert.strictEqual(e1Credentials[0]!.connectionId, "bearer:e1");
+    assert.strictEqual(e1Credentials[0]!.credential.token, "fleet-token");
+
+    // The other hand-paired environment is untouched.
+    const untouched = forEnv("e2");
+    assert.deepStrictEqual(untouched.targets, [e2.target]);
+    assert.deepStrictEqual(untouched.profiles, [e2.profile]);
+    assert.deepStrictEqual(
+      merged.credentials.filter((c) => c.connectionId === "paired-e2"),
+      [e2.credential],
+    );
+    assert.strictEqual(merged.credentials.length, 2);
+  });
+
+  it("keeps one connection per environment when the file repeats it (last wins)", () => {
+    const merged = mergeFleetConnections(undefined, [entry("e1", "first"), entry("e1", "second")]);
+    assert.strictEqual(merged.targets.length, 1);
+    assert.strictEqual(merged.profiles.length, 1);
     assert.strictEqual(merged.credentials.length, 1);
-    assert.strictEqual((targets[0] as BearerConnectionTarget).connectionId, "bearer:e1");
-    assert.strictEqual(profiles[0]!.connectionId, "bearer:e1");
-    assert.strictEqual(merged.credentials[0]!.connectionId, "bearer:e1");
-    assert.strictEqual(merged.credentials[0]!.credential.token, "fleet-token");
+    assert.strictEqual(merged.credentials[0]!.credential.token, "second");
   });
 });
 
@@ -167,7 +201,7 @@ describe("importFleetConnections", () => {
         const path = yield* Path.Path;
         const file = path.join(dir, "fleet-connections.json");
         yield* fs.writeFileString(file, fleetFile([entry("e1", "t")]));
-        const store = yield* makeStore(null, false);
+        const store = yield* makeStore(null, "unavailable");
         const result = yield* importFleetConnections(dir).pipe(Effect.provide(store.layer));
         assert.deepStrictEqual(result, { _tag: "EncryptionUnavailable" });
         assert.isTrue(yield* fs.exists(file));
@@ -187,6 +221,78 @@ describe("importFleetConnections", () => {
         assert.strictEqual(result._tag, "CatalogUnreadable");
         assert.isTrue(yield* fs.exists(file));
         assert.strictEqual(yield* Ref.get(store.ref), "{ corrupt catalog");
+      }),
+    ),
+  );
+
+  it.effect("skips an entry with a blank environment id and still removes the file", () =>
+    withStateDir((dir) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const file = path.join(dir, "fleet-connections.json");
+        yield* fs.writeFileString(
+          file,
+          fleetFile([{ ...entry("e1", "t"), environmentId: "" }, entry("e2", "t2")]),
+        );
+        const store = yield* makeStore(null);
+        const result = yield* importFleetConnections(dir).pipe(Effect.provide(store.layer));
+        assert.deepStrictEqual(result, { _tag: "Imported", count: 1 });
+        assert.isFalse(yield* fs.exists(file));
+      }),
+    ),
+  );
+
+  it.effect("writes one ledger row per environment when the file repeats it", () =>
+    withStateDir((dir) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* fs.writeFileString(
+          path.join(dir, "fleet-connections.json"),
+          fleetFile([entry("e1", "first"), entry("e1", "second")]),
+        );
+        const store = yield* makeStore(null);
+        const result = yield* importFleetConnections(dir).pipe(Effect.provide(store.layer));
+        assert.deepStrictEqual(result, { _tag: "Imported", count: 1 });
+        const ledger = yield* fs.readFileString(path.join(dir, "fleet-connections.imported.json"));
+        assert.strictEqual(ledger.split('"environmentId": "e1"').length - 1, 1);
+      }),
+    ),
+  );
+
+  it.effect("keeps earlier ledger rows for other environments", () =>
+    withStateDir((dir) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const file = path.join(dir, "fleet-connections.json");
+        const ledgerPath = path.join(dir, "fleet-connections.imported.json");
+        const store = yield* makeStore(null);
+        yield* fs.writeFileString(file, fleetFile([entry("e1", "t1")]));
+        yield* importFleetConnections(dir).pipe(Effect.provide(store.layer));
+        yield* fs.writeFileString(file, fleetFile([entry("e2", "t2")]));
+        const result = yield* importFleetConnections(dir).pipe(Effect.provide(store.layer));
+        assert.deepStrictEqual(result, { _tag: "Imported", count: 1 });
+        const ledger = yield* fs.readFileString(ledgerPath);
+        assert.include(ledger, '"environmentId": "e1"');
+        assert.include(ledger, '"environmentId": "e2"');
+      }),
+    ),
+  );
+
+  it.effect("reports a failed save separately from missing encryption and keeps the file", () =>
+    withStateDir((dir) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const file = path.join(dir, "fleet-connections.json");
+        yield* fs.writeFileString(file, fleetFile([entry("e1", "SECRET")]));
+        const store = yield* makeStore(null, "fails");
+        const result = yield* importFleetConnections(dir).pipe(Effect.provide(store.layer));
+        assert.strictEqual(result._tag, "SaveFailed");
+        assert.notInclude(encodeJson(result), "SECRET");
+        assert.isTrue(yield* fs.exists(file));
       }),
     ),
   );
