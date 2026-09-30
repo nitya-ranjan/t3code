@@ -555,6 +555,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     providerSettingsOnly: true,
   },
   {
+    id: "fallback-chains",
+    title: "Fallback chains",
+    to: "/settings/providers",
+    searchTerms: [
+      "account fallback chain usage limit rate limit out of usage switch account handoff next account default chain webhook per hour",
+    ],
+    providerSettingsOnly: true,
+  },
+  {
     id: "cursor-keychain-usage",
     title: "Cursor account usage",
     to: "/settings/providers",
@@ -728,6 +737,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     ],
     environmentOnly: true,
     scope: "project-defaults",
+  },
+  {
+    id: "project-fallback-chain",
+    title: "Fallback chain",
+    to: "/settings/projects",
+    searchTerms: ["account fallback usage limit switch account inherit off project override"],
   },
   {
     id: "project-actions",

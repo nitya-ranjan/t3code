@@ -1,5 +1,6 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  FallbackChainId,
   type ModelSelection,
   type ProviderInstanceId,
   type WorktreeSubmodules,
@@ -35,6 +36,7 @@ import {
   SettingsSection,
 } from "./settingsLayout";
 import {
+  useClearScopedSettings,
   useScopedSettings,
   useScopedSettingsMixed,
   useScopedSettingSource,
@@ -50,6 +52,9 @@ const WORKTREE_SUBMODULES_OPTIONS = ["recursive", "top-level", "none"] as const;
 function isWorktreeSubmodules(value: string | null): value is WorktreeSubmodules {
   return value !== null && (WORKTREE_SUBMODULES_OPTIONS as readonly string[]).includes(value);
 }
+// Chain ids are slugs, so a leading colon cannot collide with one.
+const FALLBACK_INHERIT = ":inherit";
+const FALLBACK_OFF = ":off";
 
 export function ProjectDefaultsSettings({ category }: { category: ProjectSettingsCategory }) {
   const { scope, target, targets, connectedEnvironments } = useSettingsScope();
@@ -81,6 +86,9 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const mixedAutoPull = useScopedSettingsMixed(["defaultAutoPull"]);
   const mixedMergeMethod = useScopedSettingsMixed(["pullRequestMergeMethod"]);
   const modelSource = useScopedSettingSource(["defaultModelSelection"]);
+  const mixedFallback = useScopedSettingsMixed(["accountFallbackChainId"]);
+  const fallbackSource = useScopedSettingSource(["accountFallbackChainId"]);
+  const clearSettings = useClearScopedSettings();
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
   const unavailable = connectedEnvironments.length === 0;
   // File-backed keys show their effective value; the target already carries
@@ -199,6 +207,61 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
       }
     />
   );
+  // Explicit null is Off; an absent project override inherits the environment's chain.
+  const fallbackChains = Object.entries(settings.accountFallback.chains);
+  const fallbackValue =
+    mixedFallback || fallbackSource === "mixed"
+      ? null
+      : isProjectScope && fallbackSource !== "project"
+        ? FALLBACK_INHERIT
+        : (settings.accountFallbackChainId ?? FALLBACK_OFF);
+  const fallbackLabel = (value: string | null) =>
+    value === FALLBACK_INHERIT
+      ? "Inherit"
+      : value === FALLBACK_OFF
+        ? "Off"
+        : value === null
+          ? unavailable
+            ? "Unavailable"
+            : "Mixed"
+          : (settings.accountFallback.chains[FallbackChainId.make(value)]?.displayName ??
+            `${value} (deleted)`);
+  const fallbackRow = (
+    <SettingsRow
+      serverScoped
+      settingKeys={["accountFallbackChainId"]}
+      mixed={mixedFallback}
+      {...searchableSetting("project-fallback-chain")}
+      description={
+        isProjectScope
+          ? "Accounts this project's threads move through when one runs out of usage."
+          : "Accounts threads move through when one runs out of usage. Projects can override it."
+      }
+      control={
+        <Select
+          value={fallbackValue}
+          onValueChange={(value) => {
+            if (value === FALLBACK_INHERIT) clearSettings(["accountFallbackChainId"]);
+            else if (value === FALLBACK_OFF) updateSettings({ accountFallbackChainId: null });
+            else if (value) updateSettings({ accountFallbackChainId: FallbackChainId.make(value) });
+          }}
+        >
+          <SelectTrigger size="sm" aria-label="Fallback chain">
+            <SelectValue>{fallbackLabel}</SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {isProjectScope ? <SelectItem value={FALLBACK_INHERIT}>Inherit</SelectItem> : null}
+            <SelectItem value={FALLBACK_OFF}>Off</SelectItem>
+            {fallbackChains.map(([id, chain]) => (
+              <SelectItem key={id} value={id}>
+                {chain.displayName}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
   const workspaceRow = (
     <SettingsRow
       serverScoped
@@ -267,6 +330,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
       {category === "project" ? (
         <>
           {modelRow}
+          {fallbackRow}
           {workspaceRow}
         </>
       ) : category === "general" ? (

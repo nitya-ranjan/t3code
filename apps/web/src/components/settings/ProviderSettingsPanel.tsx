@@ -82,6 +82,7 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { ExpandableText } from "./ExpandableText";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import { AccountFallbackSettings } from "./AccountFallbackSettings";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
 import { CodexSetupSection, CodexManagedRuntimeFields } from "./CodexSetupSection";
@@ -1167,6 +1168,19 @@ export function EnvironmentProviderSettings({
         environmentLabel={environmentLabel}
         sources={settings.usageLimitSources}
         cursorKeychainUsageEnabled={settings.cursorKeychainUsageEnabled}
+        readOnly={readOnly}
+      />
+
+      <AccountFallbackSettings
+        key={`fallback-${environmentId}`}
+        environmentId={environmentId}
+        instances={rows.map((row) => ({
+          instanceId: row.instanceId,
+          label:
+            row.instance.displayName?.trim() ||
+            getDriverOption(row.driver)?.label ||
+            String(row.driver),
+        }))}
         readOnly={readOnly}
       />
 

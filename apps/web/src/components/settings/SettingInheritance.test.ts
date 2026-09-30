@@ -1,4 +1,9 @@
-import { DEFAULT_SERVER_SETTINGS, EnvironmentId, ProjectId } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  EnvironmentId,
+  FallbackChainId,
+  ProjectId,
+} from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -52,6 +57,25 @@ describe("settingInheritanceLayers", () => {
       ["Inherits", false],
       ["On", true],
       ["Off", false],
+    ]);
+  });
+
+  it("names an explicit fallback chain override of null Off", () => {
+    const work = FallbackChainId.make("work");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      accountFallbackChainId: work,
+      projectSettingsOverrides: { [projectId]: { accountFallbackChainId: null } },
+    };
+    const layers = settingInheritanceLayers(
+      { environmentId, label: "Laptop", projectId, ...resolveProjectSettings(settings, projectId) },
+      settings,
+      "accountFallbackChainId",
+    );
+    expect(layers.map((layer) => [layer.label, layer.value, layer.effective])).toEqual([
+      ["Project", "Off", true],
+      ["Laptop", "work", false],
+      ["Default", "Off", false],
     ]);
   });
 

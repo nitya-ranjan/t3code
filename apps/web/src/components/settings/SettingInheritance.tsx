@@ -43,11 +43,13 @@ function formatValue(key: keyof ServerSettings, value: unknown): string {
         ? "Never"
         : key === "defaultModelSelection"
           ? "Automatic"
-          : key === "sourceControlWriterModelSelection"
-            ? "Text generation model"
-            : key === "defaultThreadEnvMode" || key === "worktreeSubmodules"
-              ? "Inherit"
-              : "Not set";
+          : key === "accountFallbackChainId"
+            ? "Off"
+            : key === "sourceControlWriterModelSelection"
+              ? "Text generation model"
+              : key === "defaultThreadEnvMode" || key === "worktreeSubmodules"
+                ? "Inherit"
+                : "Not set";
   }
   if (typeof value === "boolean") return value ? "On" : "Off";
   if (typeof value === "number") {
