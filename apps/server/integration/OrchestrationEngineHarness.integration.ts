@@ -245,6 +245,8 @@ interface MakeOrchestrationIntegrationHarnessOptions {
   readonly tracer?: Tracer.Tracer;
   /** Extra instances of `provider`, each backed by its own test adapter. */
   readonly instanceIds?: ReadonlyArray<ProviderInstanceId>;
+  /** Continuation keys by instance; instances sharing one share a conversation home. */
+  readonly continuationKeys?: Partial<Record<ProviderInstanceId, string>>;
   /** What the provider registry reports, such as auth and usage per instance. */
   readonly providers?: ReadonlyArray<ServerProvider>;
   readonly serverSettings?: DeepPartial<ServerSettings>;
@@ -281,6 +283,7 @@ export const makeOrchestrationIntegrationHarness = (
                 harness.adapter,
               ]),
             ),
+            options?.continuationKeys,
           ),
         )
       : null;

@@ -28,11 +28,14 @@ export type InstanceAdapterMap = Partial<
  * Build a `ProviderAdapterRegistryShape` from a kind-keyed adapter map.
  * Every adapter present in the map is addressable through its default
  * provider instance id. `instances` adds adapters under explicit instance
- * ids, such as two accounts of one driver; each gets its own continuation key.
+ * ids, such as two accounts of one driver; each gets its own continuation key
+ * unless `continuationKeys` names one (give two instances the same key to
+ * model accounts that share a conversation home).
  */
 export const makeAdapterRegistryMock = (
   adapters: KindAdapterMap,
   instances: InstanceAdapterMap = {},
+  continuationKeys: Partial<Record<ProviderInstanceId, string>> = {},
 ): ProviderAdapterRegistryShape => {
   const byInstanceId = new Map<ProviderInstanceId, ProviderAdapterShape<ProviderAdapterError>>();
   for (const [kind, adapter] of Object.entries(adapters)) {
@@ -74,7 +77,8 @@ export const makeAdapterRegistryMock = (
         enabled: true,
         continuationIdentity: {
           driverKind: ProviderDriverKind.make(adapter.provider),
-          continuationKey: `${adapter.provider}:instance:${instanceId}`,
+          continuationKey:
+            continuationKeys[instanceId] ?? `${adapter.provider}:instance:${instanceId}`,
         },
       });
     },
