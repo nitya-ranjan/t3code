@@ -17,6 +17,8 @@ export type ThreadActionMenuId =
   | "auto-settle"
   | "auto-settle:enabled"
   | "auto-settle:disabled"
+  | "fallback-pause"
+  | "fallback-resume"
   | "snooze"
   | `snooze:${string}`
   | "unsnooze"
@@ -50,6 +52,11 @@ export interface ThreadActionMenuState {
   readonly isRegeneratingTitle: boolean;
   /** Archive rejects a thread with an active turn, so disable it here rather than let the action fail. */
   readonly isRunning: boolean;
+  /**
+   * Whether account fallback is paused for this thread; null when the thread
+   * has no fallback state (no chain), where the toggle must not show.
+   */
+  readonly accountFallbackPaused: boolean | null;
   readonly supports: {
     readonly settlement: boolean;
     /** Server understands thread.auto-settle.set. */
@@ -163,6 +170,13 @@ export function buildThreadActionMenuItems(
           },
         ]
       : []),
+    ...(state.accountFallbackPaused === null
+      ? []
+      : [
+          state.accountFallbackPaused
+            ? { id: "fallback-resume" as const, label: "Resume account fallback", icon: "play" }
+            : { id: "fallback-pause" as const, label: "Pause account fallback", icon: "pause" },
+        ]),
     {
       id: "copy",
       label: "Copy",

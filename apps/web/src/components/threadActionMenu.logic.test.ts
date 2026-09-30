@@ -12,6 +12,7 @@ const baseState: ThreadActionMenuState = {
   canSnoozeNow: true,
   isRegeneratingTitle: false,
   isRunning: false,
+  accountFallbackPaused: null,
   supports: {
     settlement: true,
     autoSettleOptOut: true,
@@ -165,5 +166,30 @@ describe("buildThreadActionMenuItems", () => {
       (item) => item.id === "archive",
     );
     expect(archiveItem?.disabled).toBe(true);
+  });
+});
+
+describe("buildThreadActionMenuItems account fallback", () => {
+  it("hides the fallback toggle for threads without fallback state", () => {
+    expect(ids(baseState)).not.toContain("fallback-pause");
+    expect(ids(baseState)).not.toContain("fallback-resume");
+  });
+
+  it("offers pause while fallback runs and resume while it is paused", () => {
+    const running = buildThreadActionMenuItems({ ...baseState, accountFallbackPaused: false });
+    expect(running.find((item) => item.id === "fallback-pause")).toMatchObject({
+      label: "Pause account fallback",
+    });
+    expect(running.map((item) => item.id)).not.toContain("fallback-resume");
+    const paused = buildThreadActionMenuItems({ ...baseState, accountFallbackPaused: true });
+    expect(paused.find((item) => item.id === "fallback-resume")).toMatchObject({
+      label: "Resume account fallback",
+    });
+    expect(paused.map((item) => item.id)).not.toContain("fallback-pause");
+  });
+
+  it("sits with the per-thread settings after auto-settle", () => {
+    const items = ids({ ...baseState, accountFallbackPaused: false });
+    expect(items[items.indexOf("auto-settle") + 1]).toBe("fallback-pause");
   });
 });

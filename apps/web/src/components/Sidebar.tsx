@@ -2195,6 +2195,7 @@ export default function Sidebar() {
     reorderPinnedThread,
     reorderActiveThread,
     setThreadAutoSettle,
+    setThreadFallbackPaused,
     archiveThread,
     deleteThread,
   } = useThreadActions();
@@ -4099,6 +4100,7 @@ export default function Sidebar() {
               isRegeneratingTitle,
               isRunning:
                 thread.session?.status === "running" && thread.session.activeTurnId != null,
+              accountFallbackPaused: thread.fallback ? thread.fallback.paused : null,
               supports: {
                 settlement: supportsSettlement,
                 autoSettleOptOut: supportsAutoSettleOptOut,
@@ -4185,6 +4187,24 @@ export default function Sidebar() {
                 stackedThreadToast({
                   type: "error",
                   title: "Failed to update auto-settle",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+            return;
+          }
+          case "fallback-pause":
+          case "fallback-resume": {
+            const result = await setThreadFallbackPaused(
+              threadRef,
+              clicked.value === "fallback-pause",
+            );
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Failed to update account fallback",
                   description: error instanceof Error ? error.message : "An error occurred.",
                 }),
               );
@@ -4318,6 +4338,7 @@ export default function Sidebar() {
       serverConfigs,
       setProjectScopeKey,
       setThreadAutoSettle,
+      setThreadFallbackPaused,
       startThreadRename,
       updateThreadMetadata,
       timestampFormat,

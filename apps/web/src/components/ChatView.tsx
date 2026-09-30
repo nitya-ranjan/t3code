@@ -234,10 +234,13 @@ import { isEditableFocused } from "../lib/editableFocus";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import {
   AlarmClockIcon,
+  ArrowLeftIcon,
+  ArrowRightIcon,
   CheckCircle2Icon,
   ChevronDownIcon,
   DownloadIcon,
   GitBranchIcon,
+  HourglassIcon,
   Minimize2Icon,
   PaperclipIcon,
   WifiOffIcon,
@@ -400,6 +403,7 @@ import {
   ThreadErrorBanner,
 } from "./chat/ThreadErrorBanner";
 import type { ComposerBannerStackItem } from "./chat/ComposerBannerStack";
+import { fallbackBannerModel } from "./chat/fallbackBanner.logic";
 import { ComposerSurface } from "./chat/ComposerSurface";
 import {
   hasAvailableCompactionProvider,
@@ -6383,6 +6387,122 @@ export default function ChatView(props: ChatViewProps) {
     isUnsnoozing,
     isUnsettling,
   ]);
+  // Account fallback: a thread waiting for a usage reset, or one link of a
+  // continuation lineage. The continuation's account comes from the new
+  // thread's own model selection — fallback state does not record it.
+  const activeThreadFallback = activeThreadShell?.fallback ?? null;
+  const continuedToThreadShell = useThreadShell(
+    activeThreadFallback?.continuedToThreadId && activeThreadRef
+      ? scopeThreadRef(activeThreadRef.environmentId, activeThreadFallback.continuedToThreadId)
+      : null,
+  );
+  const providerInstanceLabels = useMemo(
+    () =>
+      new Map<string, string>(
+        providerInstanceEntries.map((entry) => [entry.instanceId, entry.displayName]),
+      ),
+    [providerInstanceEntries],
+  );
+  const cancelFallbackWaitMutation = useAtomCommand(threadEnvironment.cancelFallbackWait, {
+    reportFailure: false,
+  });
+  const [cancellingFallbackThreadKey, setCancellingFallbackThreadKey] = useState<string | null>(
+    null,
+  );
+  const isCancellingFallbackWait =
+    cancellingFallbackThreadKey !== null && cancellingFallbackThreadKey === activeThreadKey;
+  const handleCancelFallbackWait = useCallback(async () => {
+    if (!activeThreadRef) return;
+    const threadKey = scopedThreadKey(activeThreadRef);
+    setCancellingFallbackThreadKey(threadKey);
+    try {
+      const result = await cancelFallbackWaitMutation({
+        environmentId: activeThreadRef.environmentId,
+        input: { threadId: activeThreadRef.threadId },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to stop waiting",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      }
+    } finally {
+      setCancellingFallbackThreadKey((current) => (current === threadKey ? null : current));
+    }
+  }, [activeThreadRef, cancelFallbackWaitMutation]);
+  const fallbackBanner = useMemo(
+    () =>
+      fallbackBannerModel(
+        {
+          fallback: activeThreadFallback,
+          continuedToInstanceId: continuedToThreadShell?.modelSelection.instanceId ?? null,
+        },
+        Date.parse(nowMinute),
+        providerInstanceLabels,
+        timestampFormat,
+      ),
+    [
+      activeThreadFallback,
+      continuedToThreadShell?.modelSelection.instanceId,
+      nowMinute,
+      providerInstanceLabels,
+      timestampFormat,
+    ],
+  );
+  const fallbackBannerItem = useMemo<ComposerBannerStackItem | null>(() => {
+    if (fallbackBanner === null || activeThreadRef === null) return null;
+    if (fallbackBanner.kind === "waiting") {
+      return {
+        id: `thread-fallback-waiting:${activeThreadRef.threadId}`,
+        variant: "warning",
+        icon: <HourglassIcon />,
+        title: fallbackBanner.text,
+        actions: (
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={isCancellingFallbackWait}
+            onClick={() => void handleCancelFallbackWait()}
+          >
+            {isCancellingFallbackWait ? "Stopping..." : "Stop waiting"}
+          </Button>
+        ),
+      };
+    }
+    const targetThreadId = fallbackBanner.threadId;
+    return {
+      id: `thread-fallback-${fallbackBanner.kind}:${activeThreadRef.threadId}`,
+      variant: "info",
+      icon: fallbackBanner.kind === "continued-to" ? <ArrowRightIcon /> : <ArrowLeftIcon />,
+      title: fallbackBanner.text,
+      actions: (
+        <Button
+          size="xs"
+          variant="ghost"
+          onClick={() =>
+            void navigate({
+              to: "/$environmentId/$threadId",
+              params: buildThreadRouteParams(
+                scopeThreadRef(activeThreadRef.environmentId, targetThreadId),
+              ),
+            })
+          }
+        >
+          Open
+        </Button>
+      ),
+    };
+  }, [
+    activeThreadRef,
+    fallbackBanner,
+    handleCancelFallbackWait,
+    isCancellingFallbackWait,
+    navigate,
+  ]);
   // Session-scoped dismissals, one key per (thread, snapshot). A set rather
   // than a single slot so dismissing the banner on one thread does not
   // resurface it on another thread dismissed earlier.
@@ -6515,6 +6635,7 @@ export default function ChatView(props: ChatViewProps) {
       resumeCompactionBannerItem === null ? [] : [resumeCompactionBannerItem];
     const wokeThreadItems = wokeThreadBannerItem === null ? [] : [wokeThreadBannerItem];
     const parkedThreadItems = parkedThreadBannerItem === null ? [] : [parkedThreadBannerItem];
+    const fallbackItems = fallbackBannerItem === null ? [] : [fallbackBannerItem];
     // The user asked for this one, so it leads the notice tier instead of trailing it.
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
     const projectCloneItems = projectCloneBannerItem === null ? [] : [projectCloneBannerItem];
@@ -6528,6 +6649,7 @@ export default function ChatView(props: ChatViewProps) {
         ...resumeCompactionItems,
         ...wokeThreadItems,
         ...parkedThreadItems,
+        ...fallbackItems,
       ];
     }
     return [
@@ -6577,10 +6699,12 @@ export default function ChatView(props: ChatViewProps) {
         },
       },
       ...parkedThreadItems,
+      ...fallbackItems,
     ];
   }, [
     activeBranchMismatchKey,
     backgroundLivenessBannerItem,
+    fallbackBannerItem,
     feedbackBannerItems,
     handleRestoreThreadBranch,
     isRestoringThreadBranch,

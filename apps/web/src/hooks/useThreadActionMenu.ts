@@ -90,6 +90,7 @@ export function useThreadActionMenu(input: {
     pinThread,
     confirmAndUnpinThread,
     setThreadAutoSettle,
+    setThreadFallbackPaused,
     archiveThread,
     deleteThread,
   } = useThreadActions();
@@ -153,6 +154,7 @@ export function useThreadActionMenu(input: {
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
           isRegeneratingTitle,
           isRunning: thread.session?.status === "running" && thread.session.activeTurnId != null,
+          accountFallbackPaused: thread.fallback ? thread.fallback.paused : null,
           supports,
           snoozePresets,
         });
@@ -233,6 +235,12 @@ export function useThreadActionMenu(input: {
           case "auto-settle:disabled":
             await reportFailure("Failed to update auto-settle", () =>
               setThreadAutoSettle(threadRef, action === "auto-settle:enabled"),
+            );
+            return;
+          case "fallback-pause":
+          case "fallback-resume":
+            await reportFailure("Failed to update account fallback", () =>
+              setThreadFallbackPaused(threadRef, action === "fallback-pause"),
             );
             return;
           case "rename":
@@ -344,6 +352,7 @@ export function useThreadActionMenu(input: {
       projects,
       router,
       setThreadAutoSettle,
+      setThreadFallbackPaused,
       settleThread,
       snoozeThread,
       threadRef,

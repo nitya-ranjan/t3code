@@ -216,6 +216,9 @@ export function useThreadActions() {
   const setThreadAutoSettleMutation = useAtomCommand(threadEnvironment.setAutoSettle, {
     reportFailure: false,
   });
+  const setThreadFallbackPausedMutation = useAtomCommand(threadEnvironment.setFallbackPaused, {
+    reportFailure: false,
+  });
   const reorderPinnedThreadMutation = useAtomCommand(threadEnvironment.reorderPin, {
     reportFailure: false,
   });
@@ -593,6 +596,20 @@ export function useThreadActions() {
     [setThreadAutoSettleMutation],
   );
 
+  /**
+   * Pauses or resumes account fallback for one thread. No capability gate:
+   * the menu only offers it on threads that already carry fallback state,
+   * which only a server that understands the command records.
+   */
+  const setThreadFallbackPaused = useCallback(
+    (target: ScopedThreadRef, paused: boolean) =>
+      setThreadFallbackPausedMutation({
+        environmentId: target.environmentId,
+        input: { threadId: target.threadId, paused },
+      }),
+    [setThreadFallbackPausedMutation],
+  );
+
   const pinThread = useCallback(
     async (target: ScopedThreadRef, opts: { orderKey?: string } = {}) => {
       // Version skew: never send the command to a server that predates it.
@@ -913,6 +930,7 @@ export function useThreadActions() {
       reorderPinnedThread,
       reorderActiveThread,
       setThreadAutoSettle,
+      setThreadFallbackPaused,
     }),
     [
       archiveThread,
@@ -923,6 +941,7 @@ export function useThreadActions() {
       reorderPinnedThread,
       reorderActiveThread,
       setThreadAutoSettle,
+      setThreadFallbackPaused,
       settleThread,
       snoozeThread,
       unarchiveThread,
