@@ -61,6 +61,14 @@ function getSnapshot(): string {
   return nowMinute;
 }
 
+/**
+ * The minute clock as a full UTC ISO timestamp. The bare "YYYY-MM-DDTHH:MM"
+ * form has no zone, so `Date.parse` would read it as local time.
+ */
+export function nowMinuteIso(minute: string): string {
+  return `${minute}:00.000Z`;
+}
+
 export function useNowMinute(): string {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }

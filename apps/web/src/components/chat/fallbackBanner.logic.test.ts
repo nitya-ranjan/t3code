@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import { formatUpcomingTimestamp } from "../../timestampFormat";
+import { nowMinuteIso } from "../../hooks/useNowMinute";
 import { fallbackBannerModel } from "./fallbackBanner.logic";
 
 const NOW = Date.parse("2026-09-29T12:00:00.000Z");
@@ -161,5 +162,28 @@ describe("fallbackBannerModel", () => {
         labels,
       )?.kind,
     ).toBe("waiting");
+  });
+});
+
+describe("fallbackBannerModel with the minute clock", () => {
+  it("says tomorrow only when the reset is on the next local day", () => {
+    // 23:30 UTC the same day as the reset; read as UTC the reset is ~16h
+    // away, so the day label must match the helper fed the true instant.
+    const now = Date.parse(nowMinuteIso("2026-09-29T23:30"));
+    const resumeAt = "2026-09-30T15:30:00.000Z";
+    const model = fallbackBannerModel(
+      {
+        fallback: {
+          ...idle,
+          status: "waiting",
+          resumeAt,
+          candidateInstanceId: ProviderInstanceId.make("claude-work"),
+        },
+      },
+      now,
+      labels,
+    );
+    expect(now).toBe(Date.UTC(2026, 8, 29, 23, 30));
+    expect(model?.text).toContain(formatUpcomingTimestamp(resumeAt, "locale", now));
   });
 });

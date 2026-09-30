@@ -270,7 +270,7 @@ import {
   useClientSettingsHydrated,
   useEnvironmentSettings,
 } from "../hooks/useSettings";
-import { useNowMinute } from "../hooks/useNowMinute";
+import { nowMinuteIso, useNowMinute } from "../hooks/useNowMinute";
 import { usePanelAnimationSettings, usePanelPresence } from "../panelAnimations";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { useRemoveClonedProject } from "../hooks/useRemoveClonedProject";
@@ -6441,7 +6441,7 @@ export default function ChatView(props: ChatViewProps) {
           fallback: activeThreadFallback,
           continuedToInstanceId: continuedToThreadShell?.modelSelection.instanceId ?? null,
         },
-        Date.parse(nowMinute),
+        Date.parse(nowMinuteIso(nowMinute)),
         providerInstanceLabels,
         timestampFormat,
       ),
@@ -6553,7 +6553,7 @@ export default function ChatView(props: ChatViewProps) {
         provider: selectedProvider,
         usedTokens: activeContextWindow.usedTokens,
         updatedAt: activeContextWindow.updatedAt,
-        now: `${nowMinute}:00.000Z`,
+        now: nowMinuteIso(nowMinute),
       })
     ) {
       return null;
