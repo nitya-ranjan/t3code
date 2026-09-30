@@ -1,5 +1,6 @@
 import { SettingsGroup } from "./SettingsGroup";
 import { Spinner } from "~/components/ui/spinner";
+import { AgentSessionImportDialog } from "./AgentSessionImportDialog";
 import { NotificationSettings } from "./NotificationSettings";
 import { ArchiveIcon, ArchiveX, CheckIcon, ChevronRightIcon, SettingsIcon } from "lucide-react";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -2160,6 +2161,7 @@ export function GeneralSettingsPanel() {
   const isEnvironmentScope = scope.environmentIds.length === 1 && environmentId !== null;
   const hasServerTargets = connectedEnvironments.length > 0;
   const [backgroundActivityDialogOpen, setBackgroundActivityDialogOpen] = useState(false);
+  const [agentSessionImportOpen, setAgentSessionImportOpen] = useState(false);
   const [tokenStreamingWarningOpen, setTokenStreamingWarningOpen] = useState(false);
   const mixedResponseStreamingMode = useScopedSettingsMixed(["responseStreamingMode"]);
   const lastEnabledProjectGroupingMode = useRef<SidebarProjectGroupingMode>(
@@ -2993,6 +2995,21 @@ export function GeneralSettingsPanel() {
               spellCheck={false}
               aria-label="Add project base directory"
             />
+          }
+        />
+        <SettingsRow
+          {...searchableSetting("import-agent-sessions")}
+          description="Continue Claude Code and Codex sessions you started outside T3 Code."
+          control={
+            <>
+              <Button size="sm" variant="outline" onClick={() => setAgentSessionImportOpen(true)}>
+                Import…
+              </Button>
+              <AgentSessionImportDialog
+                open={agentSessionImportOpen}
+                onOpenChange={setAgentSessionImportOpen}
+              />
+            </>
           }
         />
       </SettingsSection>

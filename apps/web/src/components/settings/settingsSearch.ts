@@ -431,6 +431,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["base directory folder browser path home"],
   },
   {
+    id: "import-agent-sessions",
+    title: "Import sessions",
+    to: "/settings/general",
+    searchTerms: ["claude code codex history transcript resume existing conversation"],
+  },
+  {
     id: "unpin-confirmation",
     title: "Unpin confirmation",
     to: "/settings/general",

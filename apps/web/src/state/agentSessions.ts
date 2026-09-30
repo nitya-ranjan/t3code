@@ -23,3 +23,19 @@ export const agentSessionImport = createEnvironmentRpcCommand(connectionAtomRunt
   label: "environment-data:agent-sessions:import",
   tag: WS_METHODS.agentSessionsImport,
 });
+
+/**
+ * Every Claude Code and Codex session on an environment, for the session
+ * picker in settings. Refreshed explicitly after an import.
+ */
+export const agentSessionList = createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
+  label: "environment-data:agent-sessions:list",
+  tag: WS_METHODS.agentSessionsList,
+  staleTimeMs: 30_000,
+  idleTtlMs: 5 * 60_000,
+});
+
+export const agentSessionImportSelected = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "environment-data:agent-sessions:import-selected",
+  tag: WS_METHODS.agentSessionsImportSelected,
+});
