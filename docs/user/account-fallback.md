@@ -9,8 +9,14 @@ for a project.
 
 Open **Settings → Providers → Fallback chains** and create a named chain: an
 ordered list of your provider accounts, such as Claude Work, then Claude
-Personal, then Codex. The first account that can take the work is used, so put
-the one you want to run out last at the end.
+Personal, then Codex. When an account runs out, work moves to the next account
+in the list that can take it, so put the one you want to run out last at the
+end.
+
+New threads in a project that uses a chain start on the chain's first account,
+with that account's default model, unless the project sets its own default
+model. A thread on an account that is not in its chain still falls back, to the
+chain's first account that can take the work.
 
 The same section lets you:
 
@@ -20,6 +26,8 @@ The same section lets you:
   `https://<ntfy host>/<topic>` works as is, so the message arrives as a push
   notification.
 - Set the limit on automatic hand-offs per thread per hour. The default is 3.
+  When a thread reaches it, the thread waits until the oldest of those
+  hand-offs is an hour old, then continues on the next account.
 
 ## Choose a chain per project
 
@@ -48,9 +56,10 @@ every minute, or every 15 minutes when no reset time is known. Choose
 
 ## Pause fallback for a thread
 
-Choose **Pause account fallback** in the thread menu and usage limits behave in
-that thread as they did before: it stops and shows the limit. **Resume account
-fallback** turns it back on.
+Choose **Pause account fallback** in the thread menu of any thread in a project
+that uses a chain, and usage limits behave in that thread as they did before: it
+stops and shows the limit. A waiting thread stays waiting but does not resume on
+its own. **Resume account fallback** turns it back on.
 
 ## Mobile
 
