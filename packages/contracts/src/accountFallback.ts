@@ -31,6 +31,8 @@ export const ThreadFallbackReason = Schema.Literals([
   "switched-account",
   "waiting",
   "resumed",
+  // A user turn cleared the accounts already tried, so each may be tried again.
+  "reset-tried",
   "paused",
   "unpaused",
   "cancelled",
@@ -47,6 +49,10 @@ export const ThreadFallbackState = Schema.Struct({
   paused: Schema.Boolean,
   resumeAt: Schema.NullOr(IsoDateTime),
   waitingSince: Schema.NullOr(IsoDateTime),
+  // Why a waiting thread waits: every account is out of usage, or the hourly
+  // hand-off cap stopped a switch to an account that still has usage. Absent
+  // when idle, and on states recorded before it existed (read as exhausted).
+  waitReason: Schema.optional(Schema.Literals(["usage-exhausted", "handoff-cap"])),
   candidateInstanceId: Schema.NullOr(ProviderInstanceId),
   triedInstanceIds: Schema.Array(ProviderInstanceId),
   handoffTimes: Schema.Array(IsoDateTime),
@@ -54,3 +60,25 @@ export const ThreadFallbackState = Schema.Struct({
   continuedFromThreadId: Schema.NullOr(ThreadId),
 });
 export type ThreadFallbackState = typeof ThreadFallbackState.Type;
+
+/** The state a thread starts with the first time fallback records anything for it. */
+export function initialThreadFallbackState(chainId: FallbackChainId): ThreadFallbackState {
+  return {
+    chainId,
+    status: "idle",
+    paused: false,
+    resumeAt: null,
+    waitingSince: null,
+    candidateInstanceId: null,
+    triedInstanceIds: [],
+    handoffTimes: [],
+    continuedToThreadId: null,
+    continuedFromThreadId: null,
+  };
+}
+
+/** The state with no wait reason, for a thread leaving (or not in) a wait. */
+export function withoutWaitReason(state: ThreadFallbackState): ThreadFallbackState {
+  const { waitReason: _waitReason, ...rest } = state;
+  return rest;
+}

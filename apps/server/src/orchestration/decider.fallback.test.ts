@@ -152,6 +152,109 @@ it.layer(NodeServices.layer)("thread fallback decider", (it) => {
     }),
   );
 
+  it.effect("keeps the recorded pause when an internal update carries a stale one", () =>
+    Effect.gen(function* () {
+      const [event] = events(
+        yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.fallback.update",
+            commandId: CommandId.make("cmd-update-stale"),
+            threadId: ThreadId.make("thread-1"),
+            fallback: { ...WAITING_STATE, paused: false },
+            reason: "waiting",
+            createdAt: LATER,
+          },
+          readModel: makeReadModel({ fallback: { ...IDLE_STATE, paused: true } }),
+        }),
+      );
+      expect(event?.type).toBe("thread.fallback-updated");
+      if (event?.type === "thread.fallback-updated") {
+        expect(event.payload.fallback).toEqual({ ...WAITING_STATE, paused: true });
+      }
+    }),
+  );
+
+  it.effect("takes the pause from an internal update whose reason is a pause change", () =>
+    Effect.gen(function* () {
+      const [event] = events(
+        yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.fallback.update",
+            commandId: CommandId.make("cmd-update-unpause"),
+            threadId: ThreadId.make("thread-1"),
+            fallback: { ...IDLE_STATE, paused: false },
+            reason: "unpaused",
+            createdAt: LATER,
+          },
+          readModel: makeReadModel({ fallback: { ...IDLE_STATE, paused: true } }),
+        }),
+      );
+      if (event?.type === "thread.fallback-updated") {
+        expect(event.payload.fallback.paused).toBe(false);
+      } else {
+        expect.fail("expected thread.fallback-updated");
+      }
+    }),
+  );
+
+  it.effect("pauses a thread with no fallback state yet when given its chain", () =>
+    Effect.gen(function* () {
+      const [event] = events(
+        yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.fallback.set-paused",
+            commandId: CommandId.make("cmd-pause-fresh"),
+            threadId: ThreadId.make("thread-1"),
+            paused: true,
+            chainId: FallbackChainId.make("chain-2"),
+            createdAt: LATER,
+          },
+          readModel: makeReadModel({ fallback: null }),
+        }),
+      );
+      if (event?.type === "thread.fallback-updated") {
+        expect(event.payload.fallback).toEqual({
+          chainId: "chain-2",
+          status: "idle",
+          paused: true,
+          resumeAt: null,
+          waitingSince: null,
+          candidateInstanceId: null,
+          triedInstanceIds: [],
+          handoffTimes: [],
+          continuedToThreadId: null,
+          continuedFromThreadId: null,
+        });
+        expect(event.payload.reason).toBe("paused");
+      } else {
+        expect.fail("expected thread.fallback-updated");
+      }
+    }),
+  );
+
+  it.effect("keeps existing state's chain when pausing with a chain id", () =>
+    Effect.gen(function* () {
+      const [event] = events(
+        yield* decideOrchestrationCommand({
+          command: {
+            type: "thread.fallback.set-paused",
+            commandId: CommandId.make("cmd-pause-existing"),
+            threadId: ThreadId.make("thread-1"),
+            paused: true,
+            chainId: FallbackChainId.make("chain-2"),
+            createdAt: LATER,
+          },
+          readModel: makeReadModel({ fallback: IDLE_STATE }),
+        }),
+      );
+      if (event?.type === "thread.fallback-updated") {
+        expect(event.payload.fallback).toEqual({ ...IDLE_STATE, paused: true });
+      } else {
+        expect.fail("expected thread.fallback-updated");
+      }
+    }),
+  );
+
   it.effect("rejects pausing a thread without fallback state", () =>
     Effect.gen(function* () {
       const error = yield* Effect.flip(
@@ -180,7 +283,9 @@ it.layer(NodeServices.layer)("thread fallback decider", (it) => {
             threadId: ThreadId.make("thread-1"),
             createdAt: LATER,
           },
-          readModel: makeReadModel({ fallback: WAITING_STATE }),
+          readModel: makeReadModel({
+            fallback: { ...WAITING_STATE, waitReason: "handoff-cap" },
+          }),
         }),
       );
       expect(event?.type).toBe("thread.fallback-updated");

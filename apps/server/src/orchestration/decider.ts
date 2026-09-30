@@ -5,7 +5,9 @@ import {
   MessageId,
   ThreadLinkedPullRequest,
   UserInputRequestedPayload,
+  initialThreadFallbackState,
   isImportedAgentSessionMessageId,
+  withoutWaitReason,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -885,7 +887,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.fallback.update": {
-      yield* requireThread({ readModel, command, threadId: command.threadId });
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      // Only a pause change decides `paused`: the reactor's read-then-dispatch
+      // must never undo a pause the user set in between.
+      const recordedPaused = thread.fallback?.paused;
+      const keepsRecordedPause =
+        recordedPaused !== undefined &&
+        command.reason !== "paused" &&
+        command.reason !== "unpaused";
+      const fallback = keepsRecordedPause
+        ? { ...command.fallback, paused: recordedPaused }
+        : command.fallback;
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -896,7 +908,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.fallback-updated",
         payload: {
           threadId: command.threadId,
-          fallback: command.fallback,
+          fallback,
           reason: command.reason,
           ...(command.fromInstanceId !== undefined
             ? { fromInstanceId: command.fromInstanceId }
@@ -913,7 +925,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
-      const fallback = thread.fallback ?? null;
+      // A thread can be paused before fallback has recorded anything for it,
+      // given the chain its project resolves to.
+      const fallback =
+        thread.fallback ??
+        (command.chainId !== undefined ? initialThreadFallbackState(command.chainId) : null);
       if (fallback === null) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
@@ -961,7 +977,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           fallback: {
-            ...fallback,
+            ...withoutWaitReason(fallback),
             status: "idle",
             resumeAt: null,
             waitingSince: null,

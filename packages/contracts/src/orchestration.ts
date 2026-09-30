@@ -24,7 +24,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
-import { ThreadFallbackReason, ThreadFallbackState } from "./accountFallback.ts";
+import { FallbackChainId, ThreadFallbackReason, ThreadFallbackState } from "./accountFallback.ts";
 import {
   PullRequestActor,
   PullRequestChecksState,
@@ -1243,6 +1243,9 @@ const ThreadFallbackSetPausedCommand = Schema.Struct({
   // true stops the fallback reactor from switching accounts or resuming this
   // thread; false hands control back to it.
   paused: Schema.Boolean,
+  // The chain the thread's project resolves to. Lets a thread be paused
+  // before fallback has recorded any state for it.
+  chainId: Schema.optional(FallbackChainId),
   createdAt: IsoDateTime,
 });
 
