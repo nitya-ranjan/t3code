@@ -10,6 +10,7 @@ import { createModelSelection } from "./model.ts";
 import {
   clearProjectSettingsOverrides,
   hasProjectSettingsOverrides,
+  resolveProjectFallbackChain,
   resolveProjectFileBackedSetting,
   resolveProjectSettings,
   resolveWorktreeCleanup,
@@ -389,5 +390,29 @@ describe("account fallback project override", () => {
       },
     };
     expect(resolveProjectSettings(work, projectId).settings.accountFallbackChainId).toBe("work");
+  });
+});
+
+describe("resolveProjectFallbackChain", () => {
+  const settingsWith = (chainId: string | null) => ({
+    ...DEFAULT_SERVER_SETTINGS,
+    accountFallback: {
+      ...DEFAULT_SERVER_SETTINGS.accountFallback,
+      chains: {
+        [FallbackChainId.make("work")]: {
+          displayName: "Work",
+          instanceIds: [ProviderInstanceId.make("claude_work"), ProviderInstanceId.make("codex")],
+        },
+      },
+    },
+    accountFallbackChainId: chainId === null ? null : FallbackChainId.make(chainId),
+  });
+  it("resolves the project's chain and ignores unknown chains", () => {
+    expect(resolveProjectFallbackChain(settingsWith("work"), projectId)).toEqual({
+      chainId: "work",
+      instanceIds: ["claude_work", "codex"],
+    });
+    expect(resolveProjectFallbackChain(settingsWith("missing"), projectId)).toBeNull();
+    expect(resolveProjectFallbackChain(settingsWith(null), projectId)).toBeNull();
   });
 });

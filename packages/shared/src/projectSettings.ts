@@ -1,4 +1,5 @@
 import {
+  type FallbackChainId,
   type ModelSelection,
   PROJECT_FILE_BACKED_SETTINGS,
   PROJECT_SCOPED_SERVER_SETTING_KEYS,
@@ -6,6 +7,7 @@ import {
   type ProjectId,
   type ProjectScopedServerSettingKey,
   type ProjectSettingsOverrides,
+  type ProviderInstanceId,
   type ResolvedServerSettings,
   type ServerSettings,
   type T3ProjectFile,
@@ -97,6 +99,25 @@ export function resolveProjectSettings(
 ): ResolvedProjectSettings {
   const resolved = resolveProjectOverrides(settings, projectId, project);
   return projectFile === undefined ? resolved : applyProjectFile(resolved, projectFile);
+}
+
+/**
+ * The account fallback chain a project resolves to, or null when none is
+ * selected or the selected one no longer exists.
+ */
+export function resolveProjectFallbackChain(
+  settings: ServerSettings,
+  projectId: ProjectId | null,
+): {
+  readonly chainId: FallbackChainId;
+  readonly instanceIds: ReadonlyArray<ProviderInstanceId>;
+} | null {
+  const resolved = resolveProjectSettings(settings, projectId).settings;
+  const chainId = resolved.accountFallbackChainId;
+  if (chainId === null || chainId === undefined) return null;
+  const chain = resolved.accountFallback.chains[chainId];
+  if (chain === undefined) return null;
+  return { chainId, instanceIds: chain.instanceIds };
 }
 
 function applyProjectFile(

@@ -1,11 +1,4 @@
-import type {
-  FallbackChainId,
-  ProjectId,
-  ProviderInstanceId,
-  ServerProviderUsageLimits,
-  ServerSettings,
-} from "@t3tools/contracts";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import type { ProviderInstanceId, ServerProviderUsageLimits } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
@@ -23,6 +16,11 @@ export type FallbackDecision =
   | { readonly _tag: "ContinueInNewThread"; readonly instanceId: ProviderInstanceId }
   | {
       readonly _tag: "Wait";
+      /**
+       * `usage-exhausted`: no account can take the work. `handoff-cap`: one
+       * can (`candidateInstanceId`), but the hourly cap on hand-offs is spent.
+       */
+      readonly reason: "usage-exhausted" | "handoff-cap";
       readonly resumeAt: string | null;
       readonly candidateInstanceId: ProviderInstanceId | null;
     };
@@ -30,22 +28,6 @@ export type FallbackDecision =
 function parseMs(iso: string): number | null {
   const parsed = DateTime.make(iso);
   return Option.isSome(parsed) ? DateTime.toEpochMillis(parsed.value) : null;
-}
-
-/** The chain configured for the project, or null when none is selected or it no longer exists. */
-export function resolveFallbackChain(
-  settings: ServerSettings,
-  projectId: ProjectId,
-): {
-  readonly chainId: FallbackChainId;
-  readonly instanceIds: ReadonlyArray<ProviderInstanceId>;
-} | null {
-  const resolved = resolveProjectSettings(settings, projectId).settings;
-  const chainId = resolved.accountFallbackChainId;
-  if (chainId === null || chainId === undefined) return null;
-  const chain = resolved.accountFallback.chains[chainId];
-  if (chain === undefined) return null;
-  return { chainId, instanceIds: chain.instanceIds };
 }
 
 /** The latest reset among fully used windows that have not reset yet, or null. */
@@ -82,16 +64,13 @@ export function decideFallback(input: {
   const { chain, candidates, nowMs } = input;
   const isLimit = input.mode === "limit";
 
+  // A limit walks on from the current account and wraps around, never picking
+  // it again; an account outside the chain starts the walk at the beginning.
+  // A resume walks the chain in order and may pick the current account.
   const currentIndex = chain.indexOf(input.currentInstanceId);
-  const ordered: ReadonlyArray<ProviderInstanceId> = isLimit
+  const walk = isLimit
     ? [...chain.slice(currentIndex + 1), ...chain.slice(0, Math.max(currentIndex, 0))]
     : chain;
-  // An instance missing from the chain starts the walk at the beginning, and
-  // is never a candidate itself in limit mode.
-  const walk =
-    isLimit && currentIndex < 0
-      ? chain.filter((instanceId) => instanceId !== input.currentInstanceId)
-      : ordered;
 
   const isExhausted = (candidate: FallbackCandidate): boolean => {
     if (candidate.exhaustedUntil === null) return false;
@@ -100,19 +79,24 @@ export function decideFallback(input: {
   };
 
   for (const instanceId of walk) {
-    if (isLimit && instanceId === input.currentInstanceId) continue;
     if (input.tried.has(instanceId)) continue;
     const candidate = candidates.get(instanceId);
     if (candidate === undefined || !candidate.usable || isExhausted(candidate)) continue;
 
     // The cap only limits hand-offs caused by a limit event; resuming is exempt.
+    // Past the cap, wait until the oldest hand-off in the hour ages out of it.
     if (isLimit) {
-      const recent = input.handoffTimes.filter((time) => {
+      const recentMs = input.handoffTimes.flatMap((time) => {
         const ms = parseMs(time);
-        return ms !== null && nowMs - ms < HOUR_MS;
-      }).length;
-      if (recent >= input.maxHandoffsPerHour) {
-        return { _tag: "Wait", resumeAt: null, candidateInstanceId: null };
+        return ms !== null && nowMs - ms < HOUR_MS ? [ms] : [];
+      });
+      if (recentMs.length >= input.maxHandoffsPerHour) {
+        return {
+          _tag: "Wait",
+          reason: "handoff-cap",
+          resumeAt: DateTime.formatIso(DateTime.makeUnsafe(Math.min(...recentMs) + HOUR_MS)),
+          candidateInstanceId: instanceId,
+        };
       }
     }
     return candidate.continuationKey === input.currentContinuationKey
@@ -134,6 +118,7 @@ export function decideFallback(input: {
   }
   return {
     _tag: "Wait",
+    reason: "usage-exhausted",
     resumeAt: earliest?.iso ?? null,
     candidateInstanceId: earliest?.instanceId ?? null,
   };

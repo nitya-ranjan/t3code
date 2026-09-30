@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 
@@ -29,6 +30,20 @@ const recordingClient = (requests: Array<Recorded>) =>
       }),
     ),
   );
+
+const statusClient = (status: number) =>
+  Layer.succeed(
+    HttpClient.HttpClient,
+    HttpClient.make((request) =>
+      Effect.succeed(HttpClientResponse.fromWeb(request, new Response(null, { status }))),
+    ),
+  );
+
+/** Collects every log line's message and annotations-free payload as text. */
+const capturingLogger = (lines: Array<string>) =>
+  Logger.layer([Logger.make(({ message }) => lines.push(JSON.stringify(message)))], {
+    mergeWithExisting: false,
+  });
 
 const failingClient = Layer.succeed(
   HttpClient.HttpClient,
@@ -59,6 +74,47 @@ describe("FallbackWebhook", () => {
         yield* webhook.notify(null, "ignored");
       }).pipe(Effect.provide(FallbackWebhook.layer.pipe(Layer.provide(recordingClient(requests)))));
       assert.strictEqual(requests.length, 0);
+    }),
+  );
+
+  it.effect("logs a non-2xx response with the host and status only", () =>
+    Effect.gen(function* () {
+      const lines: Array<string> = [];
+      yield* Effect.gen(function* () {
+        const webhook = yield* FallbackWebhook;
+        yield* webhook.notify("https://hooks.example.test/SECRET?token=abc", "text");
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            FallbackWebhook.layer.pipe(Layer.provide(statusClient(404))),
+            capturingLogger(lines),
+          ),
+        ),
+      );
+      assert.strictEqual(lines.length, 1);
+      assert.include(lines[0]!, "Account fallback webhook failed");
+      assert.include(lines[0]!, "hooks.example.test");
+      assert.include(lines[0]!, "status 404");
+      assert.notInclude(lines[0]!, "SECRET");
+      assert.notInclude(lines[0]!, "token");
+    }),
+  );
+
+  it.effect("logs nothing for a 2xx response", () =>
+    Effect.gen(function* () {
+      const lines: Array<string> = [];
+      yield* Effect.gen(function* () {
+        const webhook = yield* FallbackWebhook;
+        yield* webhook.notify("https://hooks.example.test/x", "text");
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            FallbackWebhook.layer.pipe(Layer.provide(statusClient(204))),
+            capturingLogger(lines),
+          ),
+        ),
+      );
+      assert.deepStrictEqual(lines, []);
     }),
   );
 

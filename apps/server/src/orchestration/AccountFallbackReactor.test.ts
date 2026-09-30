@@ -200,7 +200,8 @@ const makeHarness = Effect.fn("makeAccountFallbackHarness")(function* (options: 
   const threads = yield* Ref.make(new Map([[options.thread.id, options.thread]]));
   const shellReads = yield* Queue.unbounded<ThreadId>();
   const snapshotReads = yield* Queue.unbounded<void>();
-  const refreshCalls = yield* Ref.make(0);
+  const refreshedInstances = yield* Ref.make<ReadonlyArray<ProviderInstanceId>>([]);
+  const settingsReads = yield* Queue.unbounded<void>();
   const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
   const webhooks = yield* Ref.make<ReadonlyArray<{ url: string | null; text: string }>>([]);
 
@@ -286,8 +287,8 @@ const makeHarness = Effect.fn("makeAccountFallbackHarness")(function* (options: 
     }),
     Layer.mock(ProviderRegistry)({
       getProviders: Effect.succeed(options.instances.map(makeProvider)),
-      refresh: () =>
-        Ref.update(refreshCalls, (count) => count + 1).pipe(
+      refreshInstance: (instanceId) =>
+        Ref.update(refreshedInstances, (ids) => [...ids, instanceId]).pipe(
           Effect.as(options.instances.map(makeProvider)),
         ),
     }),
@@ -315,7 +316,9 @@ const makeHarness = Effect.fn("makeAccountFallbackHarness")(function* (options: 
         Effect.map((subscription) => Stream.fromSubscription(subscription)),
       ),
     }),
-    Layer.mock(ServerSettingsService)({ getSettings: Effect.succeed(options.settings) }),
+    Layer.mock(ServerSettingsService)({
+      getSettings: Queue.offer(settingsReads, undefined).pipe(Effect.as(options.settings)),
+    }),
     // Only `devUrl` is read; undefined keeps the dev-only limit simulation off.
     Layer.succeed(ServerConfig, { devUrl: undefined } as unknown as ServerConfig["Service"]),
     Layer.succeed(
@@ -366,7 +369,8 @@ const makeHarness = Effect.fn("makeAccountFallbackHarness")(function* (options: 
     threads,
     shellReads,
     snapshotReads,
-    refreshCalls,
+    settingsReads,
+    refreshedInstances,
     domainEvents,
   };
 });
@@ -488,8 +492,20 @@ describe("AccountFallbackReactor", () => {
           const commands = yield* Ref.get(harness.commands);
           assert.deepStrictEqual(
             commands.map((command) => command.type),
-            ["thread.turn.interrupt", "thread.turn.start", "thread.fallback.update"],
+            [
+              "thread.turn.interrupt",
+              "thread.meta.update",
+              "thread.turn.start",
+              "thread.fallback.update",
+            ],
           );
+          const [metaUpdate] = commandsOfType(commands, "thread.meta.update");
+          assert.strictEqual(metaUpdate!.threadId, THREAD_ID);
+          assert.deepStrictEqual(metaUpdate!.modelSelection, {
+            instanceId: codexB.instanceId,
+            model: "gpt-5",
+            options: [{ id: "reasoningEffort", value: "high" }],
+          });
           const [turnStart] = commandsOfType(commands, "thread.turn.start");
           assert.strictEqual(turnStart!.threadId, THREAD_ID);
           assert.deepStrictEqual(turnStart!.modelSelection, {
@@ -549,6 +565,7 @@ describe("AccountFallbackReactor", () => {
           assert.strictEqual(update!.fallback.resumeAt, earliest);
           assert.strictEqual(update!.fallback.waitingSince, NOW);
           assert.strictEqual(update!.fallback.candidateInstanceId, claudePersonal.instanceId);
+          assert.strictEqual(update!.fallback.waitReason, "usage-exhausted");
           assert.deepStrictEqual(yield* Ref.get(harness.webhooks), [
             {
               url: WEBHOOK_URL,
@@ -680,6 +697,7 @@ describe("AccountFallbackReactor", () => {
           assert.strictEqual(commands.length, 1);
           assert.strictEqual(yield* Queue.size(harness.shellReads), 1);
           const [update] = commandsOfType(commands, "thread.fallback.update");
+          assert.strictEqual(update!.reason, "reset-tried");
           assert.deepStrictEqual(update!.fallback, { ...triedState, triedInstanceIds: [] });
           // Already empty: nothing more to write.
           yield* Queue.clear(harness.shellReads);
@@ -730,7 +748,7 @@ describe("AccountFallbackReactor", () => {
           yield* awaitSweep(harness);
           yield* advanceAndSweep(harness);
           assert.deepStrictEqual(yield* Ref.get(harness.commands), []);
-          assert.strictEqual(yield* Ref.get(harness.refreshCalls), 0);
+          assert.deepStrictEqual(yield* Ref.get(harness.refreshedInstances), []);
 
           yield* advanceAndSweep(harness);
           const commands = yield* Ref.get(harness.commands);
@@ -738,7 +756,10 @@ describe("AccountFallbackReactor", () => {
             commands.map((command) => command.type),
             ["thread.turn.start", "thread.fallback.update"],
           );
-          assert.strictEqual(yield* Ref.get(harness.refreshCalls), 1);
+          assert.deepStrictEqual(yield* Ref.get(harness.refreshedInstances), [
+            claudeWork.instanceId,
+            claudePersonal.instanceId,
+          ]);
           const [turnStart] = commandsOfType(commands, "thread.turn.start");
           assert.strictEqual(turnStart!.threadId, THREAD_ID);
           assert.isTrue(turnStart!.commandId.startsWith("server:account-fallback:"));
@@ -770,6 +791,8 @@ describe("AccountFallbackReactor", () => {
         instances: [
           { ...claudeWork, exhaustedUntil: iso(NOW_MS + 2 * MINUTE_MS) },
           { ...claudePersonal, exhaustedUntil: iso(NOW_MS + 3 * 60 * MINUTE_MS) },
+          // Outside the chain: never refreshed by the sweep.
+          codexA,
         ],
         thread: makeThread({
           fallback: waitingState({
@@ -790,7 +813,7 @@ describe("AccountFallbackReactor", () => {
             yield* advanceAndSweep(harness);
           }
           assert.deepStrictEqual(yield* Ref.get(harness.commands), []);
-          assert.strictEqual(yield* Ref.get(harness.refreshCalls), 0);
+          assert.deepStrictEqual(yield* Ref.get(harness.refreshedInstances), []);
 
           yield* advanceAndSweep(harness);
           const commands = yield* Ref.get(harness.commands);
@@ -798,7 +821,10 @@ describe("AccountFallbackReactor", () => {
             commands.map((command) => command.type),
             ["thread.fallback.update"],
           );
-          assert.strictEqual(yield* Ref.get(harness.refreshCalls), 1);
+          assert.deepStrictEqual(yield* Ref.get(harness.refreshedInstances), [
+            claudeWork.instanceId,
+            claudePersonal.instanceId,
+          ]);
           const [update] = commandsOfType(commands, "thread.fallback.update");
           assert.strictEqual(update!.reason, "waiting");
           assert.strictEqual(update!.fallback.status, "waiting");
@@ -848,6 +874,7 @@ describe("AccountFallbackReactor", () => {
           { ...claudePersonal, authenticated: false },
         ],
         thread: makeThread({
+          latestUserMessageAt: iso(NOW_MS - 20 * MINUTE_MS),
           fallback: waitingState({ waitingSince: iso(NOW_MS - 15 * MINUTE_MS) }),
         }),
       },
@@ -869,7 +896,10 @@ describe("AccountFallbackReactor", () => {
               "thread.fallback.update",
             ],
           );
-          assert.strictEqual(yield* Ref.get(harness.refreshCalls), 1);
+          assert.deepStrictEqual(yield* Ref.get(harness.refreshedInstances), [
+            claudeWork.instanceId,
+            claudePersonal.instanceId,
+          ]);
           const [create] = commandsOfType(commands, "thread.create");
           assert.strictEqual(create!.modelSelection.instanceId, claudePersonal.instanceId);
           assert.strictEqual(create!.worktreePath, "/work/tree");
@@ -898,6 +928,7 @@ describe("AccountFallbackReactor", () => {
           claudePersonal,
         ],
         thread: makeThread({
+          latestUserMessageAt: iso(NOW_MS - 90 * MINUTE_MS),
           fallback: waitingState({
             resumeAt: iso(NOW_MS - 5 * MINUTE_MS),
             waitingSince: iso(NOW_MS - 60 * MINUTE_MS),
@@ -930,7 +961,7 @@ describe("AccountFallbackReactor", () => {
           yield* advanceAndSweep(harness);
           yield* advanceAndSweep(harness);
           assert.strictEqual((yield* Ref.get(harness.commands)).length, 1);
-          assert.strictEqual(yield* Ref.get(harness.refreshCalls), 0);
+          assert.deepStrictEqual(yield* Ref.get(harness.refreshedInstances), []);
           assert.deepStrictEqual(yield* Ref.get(harness.webhooks), []);
         }),
       {
@@ -953,7 +984,7 @@ describe("AccountFallbackReactor", () => {
           yield* awaitSweep(harness);
           yield* advanceAndSweep(harness);
           assert.deepStrictEqual(yield* Ref.get(harness.commands), []);
-          assert.strictEqual(yield* Ref.get(harness.refreshCalls), 0);
+          assert.deepStrictEqual(yield* Ref.get(harness.refreshedInstances), []);
         }),
       {
         settings: settingsWithChain([claudeWork.instanceId, claudePersonal.instanceId]),
@@ -962,6 +993,132 @@ describe("AccountFallbackReactor", () => {
           fallback: waitingState({
             paused: true,
             resumeAt: iso(NOW_MS - 5 * MINUTE_MS),
+          }),
+        }),
+      },
+    ),
+  );
+
+  it.effect("waits for the hand-off cap to clear, naming the account it will resume on", () =>
+    run(
+      (harness) =>
+        Effect.gen(function* () {
+          yield* harness.publishLimit(limitEvent(claudeWork.instanceId, null));
+          const commands = yield* Ref.get(harness.commands);
+          assert.deepStrictEqual(
+            commands.map((command) => command.type),
+            ["thread.turn.interrupt", "thread.fallback.update"],
+          );
+          const [update] = commandsOfType(commands, "thread.fallback.update");
+          const clearsAt = iso(NOW_MS + 10 * MINUTE_MS);
+          assert.strictEqual(update!.reason, "waiting");
+          assert.strictEqual(update!.fallback.status, "waiting");
+          assert.strictEqual(update!.fallback.waitReason, "handoff-cap");
+          assert.strictEqual(update!.fallback.resumeAt, clearsAt);
+          assert.strictEqual(update!.fallback.candidateInstanceId, claudePersonal.instanceId);
+          assert.deepStrictEqual(yield* Ref.get(harness.webhooks), [
+            {
+              url: WEBHOOK_URL,
+              text: `T3 "Fix login": hand-off limit reached, resuming on Claude Personal around ${clearsAt}`,
+            },
+          ]);
+        }),
+      {
+        settings: settingsWithChain([claudeWork.instanceId, claudePersonal.instanceId]),
+        instances: [claudeWork, claudePersonal],
+        thread: makeThread({
+          fallback: {
+            ...waitingState(),
+            status: "idle",
+            waitingSince: null,
+            triedInstanceIds: [],
+            handoffTimes: [
+              iso(NOW_MS - 50 * MINUTE_MS),
+              iso(NOW_MS - 30 * MINUTE_MS),
+              iso(NOW_MS - 5 * MINUTE_MS),
+            ],
+          },
+        }),
+      },
+    ),
+  );
+
+  it.effect("falls back from an account outside the chain, from the chain's start", () =>
+    run(
+      (harness) =>
+        Effect.gen(function* () {
+          yield* harness.publishLimit(limitEvent(claudeWork.instanceId, null));
+          const commands = yield* Ref.get(harness.commands);
+          assert.deepStrictEqual(
+            commands.map((command) => command.type),
+            [
+              "thread.turn.interrupt",
+              "thread.create",
+              "thread.fallback.update",
+              "thread.turn.start",
+              "thread.fallback.update",
+            ],
+          );
+          const [create] = commandsOfType(commands, "thread.create");
+          assert.strictEqual(create!.modelSelection.instanceId, claudePersonal.instanceId);
+        }),
+      {
+        settings: settingsWithChain([claudePersonal.instanceId, codexA.instanceId]),
+        instances: [claudeWork, claudePersonal, codexA],
+        thread: makeThread(),
+      },
+    ),
+  );
+
+  it.effect("skips the sweep entirely when no chain is configured", () =>
+    run(
+      (harness) =>
+        Effect.gen(function* () {
+          const reactor = yield* AccountFallbackReactor.AccountFallbackReactor;
+          yield* Queue.take(harness.settingsReads);
+          yield* reactor.drain;
+          yield* TestClock.adjust("1 minute");
+          yield* Queue.take(harness.settingsReads);
+          yield* reactor.drain;
+          assert.strictEqual(yield* Queue.size(harness.snapshotReads), 0);
+          assert.deepStrictEqual(yield* Ref.get(harness.refreshedInstances), []);
+          assert.deepStrictEqual(yield* Ref.get(harness.commands), []);
+        }),
+      {
+        settings: DEFAULT_SERVER_SETTINGS,
+        instances: [claudeWork, claudePersonal],
+        thread: makeThread({
+          fallback: waitingState({ resumeAt: iso(NOW_MS - 5 * MINUTE_MS) }),
+        }),
+      },
+    ),
+  );
+
+  it.effect("cancels a due wait instead of resuming when the user wrote since it began", () =>
+    run(
+      (harness) =>
+        Effect.gen(function* () {
+          yield* awaitSweep(harness);
+          const commands = yield* Ref.get(harness.commands);
+          assert.deepStrictEqual(
+            commands.map((command) => command.type),
+            ["thread.fallback.update"],
+          );
+          const [update] = commandsOfType(commands, "thread.fallback.update");
+          assert.strictEqual(update!.reason, "cancelled");
+          assert.strictEqual(update!.fallback.status, "idle");
+          assert.strictEqual(update!.fallback.resumeAt, null);
+          assert.deepStrictEqual(yield* Ref.get(harness.webhooks), []);
+        }),
+      {
+        settings: settingsWithChain([claudeWork.instanceId, claudePersonal.instanceId]),
+        instances: [claudeWork, claudePersonal],
+        thread: makeThread({
+          latestUserMessageAt: iso(NOW_MS - MINUTE_MS),
+          fallback: waitingState({
+            resumeAt: iso(NOW_MS - 5 * MINUTE_MS),
+            waitingSince: iso(NOW_MS - 30 * MINUTE_MS),
+            candidateInstanceId: claudeWork.instanceId,
           }),
         }),
       },

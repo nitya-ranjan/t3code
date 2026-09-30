@@ -1,18 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
-import {
-  ProjectId,
-  ProviderInstanceId,
-  DEFAULT_SERVER_SETTINGS,
-  FallbackChainId,
-  type ServerSettings,
-} from "@t3tools/contracts";
+import { ProviderInstanceId } from "@t3tools/contracts";
 
-import {
-  decideFallback,
-  resolveFallbackChain,
-  usageExhaustedUntil,
-  type FallbackCandidate,
-} from "./policy.ts";
+import { decideFallback, usageExhaustedUntil, type FallbackCandidate } from "./policy.ts";
 
 const id = ProviderInstanceId.make;
 const candidate = (instanceId: string, key: string, overrides: Partial<FallbackCandidate> = {}) =>
@@ -78,6 +67,7 @@ describe("decideFallback", () => {
       }),
     ).toEqual({
       _tag: "Wait",
+      reason: "usage-exhausted",
       resumeAt: "2026-09-29T15:00:00.000Z",
       candidateInstanceId: "claude_personal",
     });
@@ -92,7 +82,12 @@ describe("decideFallback", () => {
           candidate("codex", "k3", { usable: false }),
         ]),
       }),
-    ).toEqual({ _tag: "Wait", resumeAt: null, candidateInstanceId: null });
+    ).toEqual({
+      _tag: "Wait",
+      reason: "usage-exhausted",
+      resumeAt: null,
+      candidateInstanceId: null,
+    });
   });
   it("wraps around the chain", () => {
     expect(
@@ -107,10 +102,11 @@ describe("decideFallback", () => {
       }),
     ).toEqual({ _tag: "ContinueInNewThread", instanceId: "claude_work" });
   });
-  it("waits instead of handing off past the hourly cap", () => {
+  it("waits past the hourly cap until the oldest recent hand-off leaves the hour", () => {
     const recent = [
-      "2026-09-29T11:10:00.000Z",
+      "2026-09-29T10:50:00.000Z",
       "2026-09-29T11:20:00.000Z",
+      "2026-09-29T11:10:00.000Z",
       "2026-09-29T11:30:00.000Z",
     ];
     expect(
@@ -119,11 +115,43 @@ describe("decideFallback", () => {
         handoffTimes: recent,
         candidates: new Map([
           candidate("claude_work", "k1"),
-          candidate("claude_personal", "k2"),
+          candidate("claude_personal", "k2", { usable: false }),
           candidate("codex", "k3"),
         ]),
-      })._tag,
-    ).toBe("Wait");
+      }),
+    ).toEqual({
+      _tag: "Wait",
+      reason: "handoff-cap",
+      resumeAt: "2026-09-29T12:10:00.000Z",
+      candidateInstanceId: "codex",
+    });
+  });
+  it("walks the chain from the start when the current account is not in it", () => {
+    expect(
+      decideFallback({
+        ...base,
+        chain: [id("claude_personal"), id("codex")],
+        currentInstanceId: id("claude_work"),
+        currentContinuationKey: "claude:home:/w",
+        tried: new Set([id("claude_work")]),
+        candidates: new Map([
+          candidate("claude_personal", "claude:home:/p"),
+          candidate("codex", "codex:home:/c"),
+        ]),
+      }),
+    ).toEqual({ _tag: "ContinueInNewThread", instanceId: "claude_personal" });
+    expect(
+      decideFallback({
+        ...base,
+        chain: [id("codex_b"), id("codex_c")],
+        currentInstanceId: id("codex_a"),
+        currentContinuationKey: "codex:home:/c",
+        candidates: new Map([
+          candidate("codex_b", "codex:home:/c", { usable: false }),
+          candidate("codex_c", "codex:home:/c"),
+        ]),
+      }),
+    ).toEqual({ _tag: "SwitchAccount", instanceId: "codex_c" });
   });
   it("ignores hand-offs older than an hour when applying the cap", () => {
     expect(
@@ -223,30 +251,5 @@ describe("usageExhaustedUntil", () => {
         NOW,
       ),
     ).toBeNull();
-  });
-});
-
-describe("resolveFallbackChain", () => {
-  const projectId = ProjectId.make("p1");
-  const settingsWith = (chainId: string | null): ServerSettings => ({
-    ...DEFAULT_SERVER_SETTINGS,
-    accountFallback: {
-      ...DEFAULT_SERVER_SETTINGS.accountFallback,
-      chains: {
-        [FallbackChainId.make("work")]: {
-          displayName: "Work",
-          instanceIds: [id("claude_work"), id("codex")],
-        },
-      },
-    },
-    accountFallbackChainId: chainId === null ? null : FallbackChainId.make(chainId),
-  });
-  it("resolves the project's chain and ignores unknown chains", () => {
-    expect(resolveFallbackChain(settingsWith("work"), projectId)).toEqual({
-      chainId: "work",
-      instanceIds: ["claude_work", "codex"],
-    });
-    expect(resolveFallbackChain(settingsWith("missing"), projectId)).toBeNull();
-    expect(resolveFallbackChain(settingsWith(null), projectId)).toBeNull();
   });
 });
