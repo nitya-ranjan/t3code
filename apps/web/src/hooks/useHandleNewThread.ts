@@ -22,10 +22,14 @@ import {
   getProjectOrderKey,
   selectProjectGroupingSettings,
 } from "../logicalProject";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import {
+  resolveProjectFallbackChain,
+  resolveProjectSettings,
+} from "@t3tools/shared/projectSettings";
 import { readProjects, readThreadShell, useProjects, useThread } from "../state/entities";
 import {
   hasExplicitComposerModelSelection,
+  resolveFallbackChainStartSelection,
   resolveNewDraftStartFromOrigin,
   resolveNewThreadModelSelectionOverride,
 } from "../lib/chatThreadActions";
@@ -136,10 +140,20 @@ export function useNewThreadHandler() {
         project,
       );
       const projectDefaultModelSelection = projectSettings.settings.defaultModelSelection;
+      // With no model default, a project on a fallback chain starts on the
+      // chain's first account.
+      const chainStartSelection = projectDefaultModelSelection
+        ? null
+        : resolveFallbackChainStartSelection(
+            resolveProjectFallbackChain(targetServerSettings, project?.id ?? null)?.instanceIds ??
+              null,
+            environmentServerConfigs.get(projectRef.environmentId)?.providers ?? [],
+          );
       const defaultRuntimeMode = projectSettings.settings.defaultRuntimeMode;
       const resolveModelSelectionOverride = (destinationDraftId: DraftId) =>
         resolveNewThreadModelSelectionOverride({
           projectDefaultSelection: projectDefaultModelSelection ?? null,
+          chainStartSelection,
           carrySelection: carryModelSelection,
           carrySourceDraftId:
             currentRouteTarget?.kind === "draft" ? currentRouteTarget.draftId : null,

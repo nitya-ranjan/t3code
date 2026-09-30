@@ -2,14 +2,17 @@ import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
   EnvironmentId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   type ModelSelection,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   resolveThreadActionProjectRef,
   hasExplicitComposerModelSelection,
   resolveNewDraftStartFromOrigin,
+  resolveFallbackChainStartSelection,
   resolveNewThreadModelSelectionOverride,
   startNewThreadFromContext,
   type ChatThreadActionContext,
@@ -85,6 +88,76 @@ describe("chatThreadActions", () => {
         destinationDraftId: "draft-b",
       }),
     ).toEqual(PROJECT_DEFAULT_SELECTION);
+  });
+
+  it("starts new threads on the fallback chain's first account when the project has no default", () => {
+    const chainStart: ModelSelection = {
+      instanceId: ProviderInstanceId.make("claude_work"),
+      model: "chain-default",
+    };
+    expect(
+      resolveNewThreadModelSelectionOverride({
+        projectDefaultSelection: null,
+        chainStartSelection: chainStart,
+        carrySelection: CARRIED_SELECTION,
+        carrySourceDraftId: "draft-a",
+        destinationDraftId: "draft-b",
+      }),
+    ).toEqual(chainStart);
+    expect(
+      resolveNewThreadModelSelectionOverride({
+        projectDefaultSelection: PROJECT_DEFAULT_SELECTION,
+        chainStartSelection: chainStart,
+        carrySelection: CARRIED_SELECTION,
+        carrySourceDraftId: "draft-a",
+        destinationDraftId: "draft-b",
+      }),
+    ).toEqual(PROJECT_DEFAULT_SELECTION);
+  });
+
+  it("resolves the chain start to the first account and that account's default model", () => {
+    const provider = (instanceId: string, defaultModel: string): ServerProvider => ({
+      instanceId: ProviderInstanceId.make(instanceId),
+      driver: ProviderDriverKind.make("claudeAgent"),
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-09-29T12:00:00.000Z",
+      models: [
+        { slug: "other-model", name: "Other", isCustom: false, capabilities: null },
+        {
+          slug: defaultModel,
+          name: "Default",
+          isCustom: false,
+          isDefault: true,
+          capabilities: null,
+        },
+      ],
+      slashCommands: [],
+      skills: [],
+    });
+    const providers = [
+      provider("claude_personal", "personal-default"),
+      provider("claude_work", "work-default"),
+    ];
+    expect(
+      resolveFallbackChainStartSelection(
+        [ProviderInstanceId.make("claude_work"), ProviderInstanceId.make("claude_personal")],
+        providers,
+      ),
+    ).toEqual({ instanceId: "claude_work", model: "work-default" });
+    expect(resolveFallbackChainStartSelection(null, providers)).toBeNull();
+    expect(
+      resolveFallbackChainStartSelection(
+        [ProviderInstanceId.make("claude_work")],
+        [{ ...provider("claude_work", "work-default"), enabled: false }],
+      ),
+    ).toBeNull();
+    expect(
+      resolveFallbackChainStartSelection([ProviderInstanceId.make("missing")], providers),
+    ).toBeNull();
   });
 
   it("only applies the start-from-origin default to new worktree drafts", () => {

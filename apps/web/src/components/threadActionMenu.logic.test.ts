@@ -1,6 +1,11 @@
+import { FallbackChainId, type ThreadFallbackState } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildThreadActionMenuItems, type ThreadActionMenuState } from "./threadActionMenu.logic";
+import {
+  buildThreadActionMenuItems,
+  resolveThreadFallbackToggle,
+  type ThreadActionMenuState,
+} from "./threadActionMenu.logic";
 
 const baseState: ThreadActionMenuState = {
   branch: null,
@@ -191,5 +196,35 @@ describe("buildThreadActionMenuItems account fallback", () => {
   it("sits with the per-thread settings after auto-settle", () => {
     const items = ids({ ...baseState, accountFallbackPaused: false });
     expect(items[items.indexOf("auto-settle") + 1]).toBe("fallback-pause");
+  });
+});
+
+describe("resolveThreadFallbackToggle", () => {
+  const chainId = FallbackChainId.make("work");
+  const state: ThreadFallbackState = {
+    chainId: FallbackChainId.make("old"),
+    status: "idle",
+    paused: true,
+    resumeAt: null,
+    waitingSince: null,
+    candidateInstanceId: null,
+    triedInstanceIds: [],
+    handoffTimes: [],
+    continuedToThreadId: null,
+    continuedFromThreadId: null,
+  };
+
+  it("offers pause before the first fallback when the project resolves to a chain", () => {
+    expect(resolveThreadFallbackToggle(null, chainId)).toEqual({ paused: false, chainId });
+    expect(resolveThreadFallbackToggle(undefined, chainId)).toEqual({ paused: false, chainId });
+  });
+
+  it("follows recorded state even when the project no longer has a chain", () => {
+    expect(resolveThreadFallbackToggle(state, null)).toEqual({ paused: true, chainId: "old" });
+    expect(resolveThreadFallbackToggle(state, chainId)).toEqual({ paused: true, chainId: "old" });
+  });
+
+  it("offers nothing without state or a chain", () => {
+    expect(resolveThreadFallbackToggle(null, null)).toBeNull();
   });
 });

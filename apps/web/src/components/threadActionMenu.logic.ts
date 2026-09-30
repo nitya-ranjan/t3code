@@ -1,4 +1,4 @@
-import type { ContextMenuItem } from "@t3tools/contracts";
+import type { ContextMenuItem, FallbackChainId, ThreadFallbackState } from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 
 /**
@@ -53,8 +53,8 @@ export interface ThreadActionMenuState {
   /** Archive rejects a thread with an active turn, so disable it here rather than let the action fail. */
   readonly isRunning: boolean;
   /**
-   * Whether account fallback is paused for this thread; null when the thread
-   * has no fallback state (no chain), where the toggle must not show.
+   * Whether account fallback is paused for this thread; null when fallback
+   * does not apply to it (see `resolveThreadFallbackToggle`).
    */
   readonly accountFallbackPaused: boolean | null;
   readonly supports: {
@@ -210,4 +210,18 @@ export function buildThreadActionMenuItems(
       icon: "trash",
     },
   ];
+}
+
+/**
+ * The pause toggle for a thread's account fallback: from its recorded state,
+ * or, before fallback has recorded any, from the chain its project resolves
+ * to (pausing then creates the state with that chain). Null when neither
+ * exists, where the toggle must not show.
+ */
+export function resolveThreadFallbackToggle(
+  fallback: ThreadFallbackState | null | undefined,
+  projectChainId: FallbackChainId | null,
+): { readonly paused: boolean; readonly chainId: FallbackChainId } | null {
+  if (fallback) return { paused: fallback.paused, chainId: fallback.chainId };
+  return projectChainId === null ? null : { paused: false, chainId: projectChainId };
 }

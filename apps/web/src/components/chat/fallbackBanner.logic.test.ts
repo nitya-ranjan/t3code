@@ -62,6 +62,48 @@ describe("fallbackBannerModel", () => {
     });
   });
 
+  it("says the hand-off cap, not exhaustion, is why a capped thread waits", () => {
+    const model = fallbackBannerModel(
+      {
+        fallback: {
+          ...idle,
+          status: "waiting",
+          waitReason: "handoff-cap",
+          resumeAt: RESUME_AT,
+          waitingSince: "2026-09-29T11:00:00.000Z",
+          candidateInstanceId: ProviderInstanceId.make("claude-home"),
+        },
+      },
+      NOW,
+      labels,
+    );
+    expect(model?.text).toBe(
+      `Reached the limit on account switches this hour. Resumes on Claude (home) around ${formatUpcomingTimestamp(RESUME_AT, "locale", NOW)}.`,
+    );
+    expect(model?.text).not.toContain("out of usage");
+  });
+
+  it("does not promise a resume while fallback is paused", () => {
+    const model = fallbackBannerModel(
+      {
+        fallback: {
+          ...idle,
+          status: "waiting",
+          paused: true,
+          resumeAt: RESUME_AT,
+          waitingSince: "2026-09-29T11:00:00.000Z",
+          candidateInstanceId: ProviderInstanceId.make("claude-work"),
+        },
+      },
+      NOW,
+      labels,
+    );
+    expect(model?.text).toBe(
+      "All accounts in this chain are out of usage. Account fallback is paused for this thread, so it will not resume on its own.",
+    );
+    expect(model?.text).not.toContain("Resumes");
+  });
+
   it("formats the resume time with the user's timestamp format", () => {
     const model = fallbackBannerModel(
       {

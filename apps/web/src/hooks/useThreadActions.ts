@@ -6,7 +6,12 @@ import {
 } from "@t3tools/client-runtime/environment";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { canSnooze, threadWokeAt } from "@t3tools/client-runtime/state/thread-settled";
-import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type FallbackChainId,
+  type ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
@@ -597,15 +602,17 @@ export function useThreadActions() {
   );
 
   /**
-   * Pauses or resumes account fallback for one thread. No capability gate:
-   * the menu only offers it on threads that already carry fallback state,
-   * which only a server that understands the command records.
+   * Pauses or resumes account fallback for one thread. `chainId` is the chain
+   * the thread's project resolves to, so a thread can be paused before
+   * fallback has recorded any state for it. No capability gate: the menu only
+   * offers it where fallback state or a configured chain exists, which only a
+   * server that understands the command has.
    */
   const setThreadFallbackPaused = useCallback(
-    (target: ScopedThreadRef, paused: boolean) =>
+    (target: ScopedThreadRef, paused: boolean, chainId: FallbackChainId) =>
       setThreadFallbackPausedMutation({
         environmentId: target.environmentId,
-        input: { threadId: target.threadId, paused },
+        input: { threadId: target.threadId, paused, chainId },
       }),
     [setThreadFallbackPausedMutation],
   );

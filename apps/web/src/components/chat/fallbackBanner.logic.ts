@@ -29,19 +29,13 @@ export function fallbackBannerModel(
   const labelFor = (instanceId: string) => labels.get(instanceId) ?? instanceId;
 
   if (fallback.status === "waiting") {
-    const resumeTime =
-      fallback.resumeAt === null
-        ? ""
-        : formatUpcomingTimestamp(fallback.resumeAt, timestampFormat, now);
-    const resumes =
-      resumeTime === ""
-        ? "Resumes when an account has usage again."
-        : fallback.candidateInstanceId === null
-          ? `Resumes around ${resumeTime}.`
-          : `Resumes on ${labelFor(fallback.candidateInstanceId)} around ${resumeTime}.`;
+    const why =
+      fallback.waitReason === "handoff-cap"
+        ? "Reached the limit on account switches this hour."
+        : "All accounts in this chain are out of usage.";
     return {
       kind: "waiting",
-      text: `All accounts in this chain are out of usage. ${resumes}`,
+      text: `${why} ${fallback.paused ? "Account fallback is paused for this thread, so it will not resume on its own." : resumesText(fallback, now, labelFor, timestampFormat)}`,
       canCancel: true,
     };
   }
@@ -64,4 +58,20 @@ export function fallbackBannerModel(
     };
   }
   return null;
+}
+
+function resumesText(
+  fallback: ThreadFallbackState,
+  now: number,
+  labelFor: (instanceId: string) => string,
+  timestampFormat: TimestampFormat,
+): string {
+  const resumeTime =
+    fallback.resumeAt === null
+      ? ""
+      : formatUpcomingTimestamp(fallback.resumeAt, timestampFormat, now);
+  if (resumeTime === "") return "Resumes when an account has usage again.";
+  return fallback.candidateInstanceId === null
+    ? `Resumes around ${resumeTime}.`
+    : `Resumes on ${labelFor(fallback.candidateInstanceId)} around ${resumeTime}.`;
 }

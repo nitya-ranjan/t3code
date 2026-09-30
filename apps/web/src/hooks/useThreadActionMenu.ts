@@ -8,12 +8,15 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import type { ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
+import { resolveProjectFallbackChain } from "@t3tools/shared/projectSettings";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 
 import { resolveSnoozePresets } from "../components/Sidebar.snooze";
 import {
   buildThreadActionMenuItems,
+  resolveThreadFallbackToggle,
   type ThreadActionMenuId,
 } from "../components/threadActionMenu.logic";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
@@ -29,6 +32,7 @@ import {
   useProjects,
 } from "../state/entities";
 import { usePrimaryEnvironmentId } from "../state/environments";
+import { environmentServerConfigsAtom } from "../state/server";
 import { readLocalApi } from "../localApi";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -71,6 +75,7 @@ export function useThreadActionMenu(input: {
   const { threadRef, projectCwd, onStartRename } = input;
   const router = useRouter();
   const projects = useProjects();
+  const serverConfigs = useAtomValue(environmentServerConfigsAtom);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const logicalProjectKeyByPhysicalKey = useMemo(
@@ -142,6 +147,13 @@ export function useThreadActionMenu(input: {
         };
         const isRegeneratingTitle = thread.titleRegeneration != null;
         const snoozePresets = resolveSnoozePresets(now, timestampFormat);
+        const serverSettings = serverConfigs.get(threadRef.environmentId)?.settings;
+        const fallbackToggle = resolveThreadFallbackToggle(
+          thread.fallback,
+          serverSettings
+            ? (resolveProjectFallbackChain(serverSettings, thread.projectId)?.chainId ?? null)
+            : null,
+        );
         const items = buildThreadActionMenuItems({
           branch: thread.branch ?? null,
           // The chat header has no project-scoped thread list behind the
@@ -154,7 +166,7 @@ export function useThreadActionMenu(input: {
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
           isRegeneratingTitle,
           isRunning: thread.session?.status === "running" && thread.session.activeTurnId != null,
-          accountFallbackPaused: thread.fallback ? thread.fallback.paused : null,
+          accountFallbackPaused: fallbackToggle?.paused ?? null,
           supports,
           snoozePresets,
         });
@@ -239,8 +251,13 @@ export function useThreadActionMenu(input: {
             return;
           case "fallback-pause":
           case "fallback-resume":
+            if (fallbackToggle === null) return;
             await reportFailure("Failed to update account fallback", () =>
-              setThreadFallbackPaused(threadRef, action === "fallback-pause"),
+              setThreadFallbackPaused(
+                threadRef,
+                action === "fallback-pause",
+                fallbackToggle.chainId,
+              ),
             );
             return;
           case "rename":
@@ -351,6 +368,7 @@ export function useThreadActionMenu(input: {
       projectGroupingSettings,
       projects,
       router,
+      serverConfigs,
       setThreadAutoSettle,
       setThreadFallbackPaused,
       settleThread,

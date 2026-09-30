@@ -154,7 +154,8 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { cn } from "~/lib/utils";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { ProjectEnvironmentBadge } from "./ProjectEnvironmentBadge";
-import { buildThreadActionMenuItems } from "./threadActionMenu.logic";
+import { buildThreadActionMenuItems, resolveThreadFallbackToggle } from "./threadActionMenu.logic";
+import { resolveProjectFallbackChain } from "@t3tools/shared/projectSettings";
 import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
@@ -4074,6 +4075,13 @@ export default function Sidebar() {
         const isPinned = thread.pinnedAt != null;
         // Presets resolve at menu-open time (same as the popover).
         const snoozePresets = resolveSnoozePresets(new Date(), timestampFormat);
+        const threadServerSettings = serverConfigs.get(thread.environmentId)?.settings;
+        const fallbackToggle = resolveThreadFallbackToggle(
+          thread.fallback,
+          threadServerSettings
+            ? (resolveProjectFallbackChain(threadServerSettings, thread.projectId)?.chainId ?? null)
+            : null,
+        );
         const threadProjectGroup =
           projectGroupsRef.current.find((project) =>
             project.memberProjectRefs.some(
@@ -4100,7 +4108,7 @@ export default function Sidebar() {
               isRegeneratingTitle,
               isRunning:
                 thread.session?.status === "running" && thread.session.activeTurnId != null,
-              accountFallbackPaused: thread.fallback ? thread.fallback.paused : null,
+              accountFallbackPaused: fallbackToggle?.paused ?? null,
               supports: {
                 settlement: supportsSettlement,
                 autoSettleOptOut: supportsAutoSettleOptOut,
@@ -4195,9 +4203,11 @@ export default function Sidebar() {
           }
           case "fallback-pause":
           case "fallback-resume": {
+            if (fallbackToggle === null) return;
             const result = await setThreadFallbackPaused(
               threadRef,
               clicked.value === "fallback-pause",
+              fallbackToggle.chainId,
             );
             if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
               const error = squashAtomCommandFailure(result);
