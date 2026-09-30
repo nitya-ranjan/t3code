@@ -97,7 +97,8 @@ for command and file approvals.
 When Codex stops on a usage limit, the thread names the window that ran out and
 when it resets, when Codex reports them. Send the message again after the reset. On a workspace plan the
 message also says whether your workspace owner needs to add credits or raise the
-spend limit to continue sooner.
+spend limit to continue sooner. To continue on another account automatically, set
+up [account fallback](./account-fallback.md).
 
 ## Send feedback to OpenAI
 
