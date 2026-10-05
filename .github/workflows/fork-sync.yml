@@ -76,7 +76,9 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git check-ref-format "refs/fork-sync/$UPSTREAM_REF"
-          git fetch --no-tags https://github.com/pingdotgg/t3code.git "$UPSTREAM_REF:refs/remotes/upstream/sync"
+          # Sparse checkout uses a partial clone. Fetch upstream's complete
+          # objects so merge never asks the fork for an upstream-only blob.
+          git fetch --no-filter --refetch --no-tags https://github.com/pingdotgg/t3code.git "$UPSTREAM_REF:refs/remotes/upstream/sync"
           printf 'Selected upstream ref: `%s`\n\n' "$UPSTREAM_REF" >> "$GITHUB_STEP_SUMMARY"
           node "$RUNNER_TEMP/fork-sync/fork-sync.cjs"
 
