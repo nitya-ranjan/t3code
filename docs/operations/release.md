@@ -2,6 +2,9 @@
 
 > For maintainers. Using T3 Code? See [docs/user](../user/).
 
+For `nitya-ranjan/t3code`, use [Maintaining this fork](./fork-updates.md).
+The workflow described below publishes upstream releases and is disabled in this fork.
+
 This document covers the unified release workflow for stable and nightly desktop releases.
 
 ## What the workflow does
@@ -328,6 +331,7 @@ available.
 - Repository slug source:
   - `T3CODE_DESKTOP_UPDATE_REPOSITORY` (format `owner/repo`), if set.
   - otherwise `GITHUB_REPOSITORY` from GitHub Actions.
+  - otherwise this fork's `nitya-ranjan/t3code` repository for local builds.
 - Required release assets for updater:
   - platform installers (`.exe`, `.dmg`, `.AppImage`, `.deb`, plus macOS `.zip` for Squirrel.Mac update payloads)
   - channel metadata: `latest*.yml` for stable releases, `nightly*.yml` for nightly releases

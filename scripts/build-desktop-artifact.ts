@@ -14,6 +14,7 @@ import {
 } from "@electron/asar";
 
 import { fromYaml } from "@t3tools/shared/schemaYaml";
+import { CLI_RELEASE_REPOSITORY } from "@t3tools/shared/cliRelease";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
@@ -2545,7 +2546,7 @@ export const resolveGitHubPublishConfig = Effect.fn("resolveGitHubPublishConfig"
   const rawRepo = (
     Option.getOrUndefined(env.updateRepository)?.trim() ||
     Option.getOrUndefined(env.githubRepository)?.trim() ||
-    ""
+    CLI_RELEASE_REPOSITORY
   ).trim();
   if (!rawRepo) return undefined;
 

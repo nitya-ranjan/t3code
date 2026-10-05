@@ -1,7 +1,7 @@
 # Installs the T3 Code CLI from a GitHub Release archive on Windows. Needs
 # only PowerShell 5.1+; no Node, npm, or compiler.
 #
-#   irm https://t3.codes/install.ps1 | iex
+#   ./scripts/install.ps1 (from this fork's checkout)
 #
 # Environment:
 #   T3CODE_CHANNEL           release train to follow: stable, nightly, or preview
@@ -16,7 +16,8 @@
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$repo = "pingdotgg/t3code"
+# Keep installations on the fork so updates preserve its custom features.
+$repo = "nitya-ranjan/t3code"
 $baseUrl = if ($env:T3CODE_RELEASE_BASE_URL) { $env:T3CODE_RELEASE_BASE_URL.TrimEnd("/") } else { "https://github.com/$repo/releases/download" }
 $t3Home = if ($env:T3CODE_HOME) { $env:T3CODE_HOME } else { Join-Path $HOME ".t3" }
 $binDir = if ($env:T3CODE_INSTALL_BIN_DIR) { $env:T3CODE_INSTALL_BIN_DIR } else { Join-Path $HOME ".local\bin" }
@@ -172,7 +173,7 @@ if ((Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $version)) {
     } catch {
       $status = $_.Exception.Response.StatusCode.value__
       if ($status -eq 404) {
-        Fail "t3 $version has no release archive for win32-$arch; releases before the self-contained CLI can only be installed with 'npm install -g t3@$version'"
+        Fail "t3 $version has no release archive for win32-$arch; choose a fork release with CLI assets at https://github.com/$repo/releases"
       }
       throw
     }
