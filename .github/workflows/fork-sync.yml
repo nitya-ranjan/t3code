@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: fork-upstream-sync
@@ -35,7 +36,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/fork-sync"
           cp .github/scripts/fork-sync*.cjs "$RUNNER_TEMP/fork-sync/"
-          node --test "$RUNNER_TEMP/fork-sync/fork-sync.test.cjs"
+          node --test "$RUNNER_TEMP"/fork-sync/*.test.cjs
 
       - name: Resolve upstream nightly
         id: upstream
@@ -79,6 +80,8 @@ jobs:
           # Sparse checkout uses a partial clone. Fetch upstream's complete
           # objects so merge never asks the fork for an upstream-only blob.
           git fetch --no-filter --refetch --no-tags https://github.com/pingdotgg/t3code.git "$UPSTREAM_REF:refs/remotes/upstream/sync"
+          echo "upstream=$(git rev-parse refs/remotes/upstream/sync^{commit})" >> "$GITHUB_OUTPUT"
+          echo "base=$(git rev-parse refs/remotes/origin/nitya/release^{commit})" >> "$GITHUB_OUTPUT"
           printf 'Selected upstream ref: `%s`\n\n' "$UPSTREAM_REF" >> "$GITHUB_STEP_SUMMARY"
           node "$RUNNER_TEMP/fork-sync/fork-sync.cjs"
 
@@ -118,6 +121,7 @@ jobs:
       # GITHUB_TOKEN pushes do not trigger CI, so all validation above runs in
       # this workflow. Never force-push or move the branch installed on hosts.
       - name: Publish checked candidate branch
+        id: publish
         if: steps.sync.outputs.changed == 'true'
         env:
           CANDIDATE_BRANCH: ${{ steps.sync.outputs.branch }}
@@ -129,3 +133,23 @@ jobs:
             exit 1
           fi
           printf '\nValidation passed. Published `%s` at `%s`.\n\nReview this branch, then fast-forward `nitya/release` manually to this exact commit. No release was published and no installation was changed.\n' "$CANDIDATE_BRANCH" "$CANDIDATE_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Refresh maintenance issue status
+        if: always()
+        uses: actions/github-script@v8
+        env:
+          FORK_MAINTENANCE_ISSUE: ${{ vars.FORK_MAINTENANCE_ISSUE }}
+          JOB_STATUS: ${{ job.status }}
+          SYNC_STATUS: ${{ steps.sync.outputs.status }}
+          SYNC_CHANGED: ${{ steps.sync.outputs.changed }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+          UPSTREAM_REF: ${{ steps.upstream.outputs.ref }}
+          UPSTREAM_SHA: ${{ steps.sync.outputs.upstream }}
+          BASE_SHA: ${{ steps.sync.outputs.base }}
+          CANDIDATE_BRANCH: ${{ steps.sync.outputs.branch }}
+          CANDIDATE_SHA: ${{ steps.sync.outputs.sha }}
+        with:
+          script: |
+            const path = require('node:path');
+            const { updateMaintenanceIssue } = require(path.join(process.env.RUNNER_TEMP, 'fork-sync/fork-sync-status.cjs'));
+            await updateMaintenanceIssue({ github, context, core });

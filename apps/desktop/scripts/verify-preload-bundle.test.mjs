@@ -15,6 +15,34 @@ const validPreload = `
 `;
 
 describe("desktop preload bundle verifier", () => {
+  it("executes DOM initialization and resize callbacks with Electron zoom support", () => {
+    assert.doesNotThrow(() =>
+      verifyPreloadBundle(`
+        ${validPreload}
+        const style = document.documentElement.style;
+        window.addEventListener("DOMContentLoaded", () => {
+          style.setProperty("--inset", 90 / electron.webFrame.getZoomFactor() + "px");
+        }, { once: true });
+        window.addEventListener("resize", () => {
+          if (style.getPropertyValue("--inset") !== "90px") {
+            throw new Error("DOM initialization did not run");
+          }
+        });
+      `),
+    );
+  });
+
+  it.each(["DOMContentLoaded", "resize"])("rejects errors in %s callbacks", (eventName) => {
+    assert.throws(
+      () =>
+        verifyPreloadBundle(`
+        ${validPreload}
+        window.addEventListener("${eventName}", () => { throw new Error("broken DOM callback"); });
+      `),
+      /broken DOM callback/,
+    );
+  });
+
   it("rejects required API names that only appear in strings", () => {
     assert.throws(
       () =>

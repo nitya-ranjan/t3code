@@ -7,6 +7,7 @@ import {
   type DesktopUpdateCheckResult,
   type DesktopUpdateState,
 } from "@t3tools/contracts";
+import { CLI_RELEASE_REPOSITORY } from "@t3tools/shared/cliRelease";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -74,6 +75,9 @@ const DownloadProgressInfo = Schema.Struct({
 const decodeAppUpdateYmlConfig = Schema.decodeUnknownEffect(AppUpdateYmlConfig);
 const decodeUpdateInfo = Schema.decodeUnknownEffect(UpdateInfo);
 const decodeDownloadProgressInfo = Schema.decodeUnknownEffect(DownloadProgressInfo);
+const decodeAppPackageMetadata = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ t3codeUnsignedMacBuild: Schema.optional(Schema.Boolean) })),
+);
 
 const currentIsoTimestamp = DateTime.now.pipe(Effect.map(DateTime.formatIso));
 
@@ -349,7 +353,23 @@ export const make = Effect.gen(function* () {
     Effect.map((appUpdateYmlConfig) => Option.isSome(appUpdateYmlConfig) || config.mockUpdates),
   );
 
+  const isUnsignedMacBuild =
+    environment.platform === "darwin" && environment.isPackaged && !config.mockUpdates
+      ? yield* fileSystem
+          .readFileString(environment.path.join(environment.appRoot, "package.json"))
+          .pipe(
+            Effect.flatMap(decodeAppPackageMetadata),
+            Effect.map((metadata) => metadata.t3codeUnsignedMacBuild === true),
+            Effect.orElseSucceed(() => false),
+          )
+      : false;
+
   const resolveDisabledReason = Effect.gen(function* () {
+    if (isUnsignedMacBuild) {
+      return Option.some(
+        `This unsigned Mac build requires manual updates. Install the latest fork release from https://github.com/${CLI_RELEASE_REPOSITORY}/releases.`,
+      );
+    }
     const hasFeedConfig = yield* hasUpdateFeedConfig;
     return Option.fromNullishOr(
       getAutoUpdateDisabledReason({
@@ -403,8 +423,6 @@ export const make = Effect.gen(function* () {
       fullChangelog: allowsPrerelease,
     });
   });
-
-  const shouldEnableAutoUpdates = resolveDisabledReason.pipe(Effect.map(Option.isNone));
 
   const checkForUpdates = Effect.fn("desktop.updates.checkForUpdates")(function* (
     reason: string,
@@ -923,8 +941,12 @@ export const make = Effect.gen(function* () {
       }
 
       const settings = yield* desktopSettings.get;
-      const enabled = yield* shouldEnableAutoUpdates;
-      yield* setState(createBaseUpdateState(settings.updateChannel, enabled, environment));
+      const disabledReason = yield* resolveDisabledReason;
+      const enabled = Option.isNone(disabledReason);
+      yield* setState({
+        ...createBaseUpdateState(settings.updateChannel, enabled, environment),
+        message: Option.getOrNull(disabledReason),
+      });
       if (!enabled) {
         return;
       }
@@ -994,8 +1016,12 @@ export const make = Effect.gen(function* () {
             ),
           );
 
-        const enabled = yield* shouldEnableAutoUpdates;
-        yield* setState(createBaseUpdateState(nextChannel, enabled, environment));
+        const disabledReason = yield* resolveDisabledReason;
+        const enabled = Option.isNone(disabledReason);
+        yield* setState({
+          ...createBaseUpdateState(nextChannel, enabled, environment),
+          message: Option.getOrNull(disabledReason),
+        });
 
         if (!enabled || !(yield* Ref.get(updaterConfiguredRef))) {
           return yield* Ref.get(updateStateRef);

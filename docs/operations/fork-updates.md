@@ -36,8 +36,19 @@ The workflow merges into a detached candidate, runs typechecks, the fork feature
 regressions, and a desktop/server/web build, then publishes a `fork-sync/...`
 branch. It never resets `nitya/release`, opens a pull request, or publishes an app
 release. Missing feature tests fail the checks instead of being silently skipped.
-Enable GitHub Actions failure notifications for this repository so a conflict
-does not leave the fork silently behind.
+
+Set the Actions repository variable `FORK_MAINTENANCE_ISSUE` to `1` to track results
+in the [fork maintenance issue](https://github.com/nitya-ranjan/t3code/issues/1).
+Each run replaces the issue's marked status section with the selected upstream
+ref and commit, fork commit, candidate when available, and a link to its checks.
+Conflicts and failed checks leave the release branch unchanged. The issue's
+manual checklist and notes are preserved; automation creates no issues or
+comments. The built-in GitHub token needs **Issues: write**, already declared by
+the workflow. With the variable unset, results stay in the run summary.
+The release workflow maintains a separate marked section in the same issue with
+its latest outcome, version, exact fork commit, and build run. Successful runs link
+the published release; failed or skipped builds are recorded without a release
+link. Updating either section preserves the other section and the manual checklist.
 
 Review the successful run's exact candidate SHA and diff. From a clean checkout
 of `nitya/release`, promote that commit:
@@ -64,6 +75,15 @@ platform succeeds. Versions use `<upstream-version>-nightly.<date>.<run-number>`
 so multiple fork releases between upstream versions remain distinguishable.
 The name `nightly` selects the existing updater channel; publishing is manual.
 
+The release notes and attached `fork-release.json` record the exact fork commit,
+version, latest included upstream stable/nightly tag and commit, and build run.
+The upstream tag is selected from the fork commit's ancestors, so a newer release
+that has not been merged is never claimed as included. `SHA256SUMS` covers the
+metadata and all downloadable assets. All assets are uploaded to a draft and
+verified before the release becomes visible to update clients. The shared bundle
+passes its desktop preload smoke check; each CLI archive is smoke-tested on its
+native platform by the packaging workflow.
+
 The release contains macOS, Windows, and Linux desktop installers for ARM64 and
 x64, updater manifests, blockmaps, CLI archives, and `SHA256SUMS`. Standalone CLI
 archives cover macOS ARM64, Linux ARM64/x64, and Windows ARM64/x64; macOS x64 uses
@@ -78,21 +98,23 @@ upstream when distributing this fork. The build does not configure a private
 T3 Connect deployment; direct and Tailscale connections use the existing server
 paths.
 
-Configure the fork's own Apple and Windows signing credentials using the
+This fork currently has no Apple Developer ID. macOS builds are unsigned/ad-hoc:
+download and install each new fork release manually. Updater metadata does not
+make automatic macOS installation work without signing. Windows signing is also
+optional; configure the fork's own credentials using the
 [signing sections of the release guide](./release.md#2-apple-signing--notarization-setup-macos).
-Without them, the workflow produces unsigned/ad-hoc builds. In particular, macOS
-automatic installation needs a properly signed app; distributing update metadata
-alone does not provide a working signed update path. Test an actual old-to-new
-signed update before relying on unattended distribution. The app checks for
-updates automatically but still asks the user to download and restart.
+If Apple signing is added later, test an actual old-to-new signed update before
+relying on it. Other supported desktop installations can use the normal update
+action, which still asks the user to download and restart.
 
 ## Move existing installations onto the fork feed
 
 The original `0.0.44-preview.20260930.1` desktop build deliberately has no update
 feed. Install one of the new fork `nightly` desktop releases manually on each
-machine, then use its normal update action for subsequent releases. Keep the same
-T3 home to retain saved threads and settings, and stop the previous app before
-starting its replacement.
+machine. macOS continues to require manual installation for subsequent releases.
+Keep the same T3 home to retain saved threads and settings, and stop the previous
+app before starting its replacement. Before the first V2 build, back up that home;
+do not launch an older build against the upgraded database.
 
 For standalone servers, use the fork installer from the checked-in release branch:
 

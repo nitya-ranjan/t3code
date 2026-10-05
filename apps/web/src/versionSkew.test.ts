@@ -9,11 +9,13 @@ vi.mock("./branding", () => branding);
 
 import { APP_VERSION } from "./branding";
 import {
+  appendVersionMismatchHint,
   buildVersionMismatchDismissalKey,
   dismissServerUpdateFailure,
   dismissVersionMismatch,
   isServerUpdateFailureDismissed,
   isVersionMismatchDismissed,
+  manualServerUpdateCommand,
   resolveServerConfigVersionMismatch,
   resolveServerSelfUpdateCapability,
   resolveVersionMismatch,
@@ -25,6 +27,21 @@ const MISMATCH_HINT =
   "Version mismatch. Try syncing the client and server to the same T3 Code version.";
 
 describe("versionSkew", () => {
+  it("keeps update commands on the fork CLI instead of switching to upstream npm packages", () => {
+    expect(manualServerUpdateCommand("0.0.46-nightly.20261005.1")).toBe(
+      "t3 update 0.0.46-nightly.20261005.1",
+    );
+    for (const installation of [
+      { kind: "npm-global", prefix: "/opt/node" },
+      { kind: "npx" },
+      { kind: "pnpm-dlx" },
+      { kind: "bunx" },
+    ] as const) {
+      expect(manualServerUpdateCommand("0.0.46-nightly.20261005.1", installation)).toBe(
+        "t3 update 0.0.46-nightly.20261005.1",
+      );
+    }
+  });
   beforeEach(() => {
     branding.APP_VERSION = "0.0.34";
   });
@@ -173,6 +190,14 @@ describe("versionSkew", () => {
         }),
       ),
     ).toBe(false);
+  });
+
+  it("appends a hint to connection errors when the server is behind", () => {
+    const mismatch = resolveVersionMismatch("0.0.33");
+
+    expect(appendVersionMismatchHint("Socket closed.", mismatch)).toBe(
+      `Socket closed. Hint: ${MISMATCH_HINT}`,
+    );
   });
 
   it("reads desktop-managed update capabilities from config descriptors", () => {

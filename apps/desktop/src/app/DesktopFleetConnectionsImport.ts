@@ -5,10 +5,13 @@
 import {
   BearerConnectionCredential,
   BearerConnectionProfile,
+  BearerConnectionRegistration,
   BearerConnectionTarget,
 } from "@t3tools/client-runtime/connection";
 import {
   ConnectionCatalogDocument,
+  catalogRoutes,
+  registerConnectionInCatalog,
   EMPTY_CONNECTION_CATALOG_DOCUMENT,
 } from "@t3tools/client-runtime/platform";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -74,58 +77,41 @@ export type ImportResult =
 
 const fleetConnectionId = (environmentId: string) => `bearer:${environmentId}`;
 
-/**
- * Replaces every saved connection for each imported environment (fleet-imported or
- * hand-paired under any connection id) with one bearer target, profile and credential.
- */
+/** Adds or rotates the fleet route, preserving the environment's other saved routes. */
 export function mergeFleetConnections(
   doc: ConnectionCatalogDocument | undefined,
   fleetEntries: readonly FleetConnection[],
 ): ConnectionCatalogDocument {
-  const entries = dedupeByEnvironment(fleetEntries);
-  const base = doc ?? EMPTY_CONNECTION_CATALOG_DOCUMENT;
-  const environments = new Set<string>(entries.map((e) => e.environmentId));
-  const replaced = (x: { readonly environmentId: string }) => environments.has(x.environmentId);
-  // Credentials carry no environment id, so drop those whose connection we replace.
-  const droppedConnectionIds = new Set([
-    ...entries.map((e) => fleetConnectionId(e.environmentId)),
-    ...base.targets.flatMap((t) => (replaced(t) && "connectionId" in t ? [t.connectionId] : [])),
-    ...base.profiles.flatMap((p) => (replaced(p) ? [p.connectionId] : [])),
-  ]);
-  return {
-    ...base,
-    targets: [
-      ...base.targets.filter((t) => !replaced(t)),
-      ...entries.map(
-        (e) =>
-          new BearerConnectionTarget({
-            environmentId: e.environmentId,
-            label: e.label,
-            connectionId: fleetConnectionId(e.environmentId),
-          }),
-      ),
-    ],
-    profiles: [
-      ...base.profiles.filter((p) => !replaced(p)),
-      ...entries.map(
-        (e) =>
-          new BearerConnectionProfile({
-            connectionId: fleetConnectionId(e.environmentId),
-            environmentId: e.environmentId,
-            label: e.label,
-            httpBaseUrl: e.httpBaseUrl,
-            wsBaseUrl: e.wsBaseUrl,
-          }),
-      ),
-    ],
-    credentials: [
-      ...base.credentials.filter((c) => !droppedConnectionIds.has(c.connectionId)),
-      ...entries.map((e) => ({
-        connectionId: fleetConnectionId(e.environmentId),
-        credential: new BearerConnectionCredential({ token: e.token }),
-      })),
-    ],
-  };
+  let catalog = doc ?? EMPTY_CONNECTION_CATALOG_DOCUMENT;
+  for (const entry of dedupeByEnvironment(fleetEntries)) {
+    const connectionId = fleetConnectionId(entry.environmentId);
+    const target = new BearerConnectionTarget({
+      environmentId: entry.environmentId,
+      label: entry.label,
+      connectionId,
+    });
+    catalog = registerConnectionInCatalog(
+      catalog,
+      new BearerConnectionRegistration({
+        target,
+        profile: new BearerConnectionProfile({
+          connectionId,
+          environmentId: entry.environmentId,
+          label: entry.label,
+          httpBaseUrl: entry.httpBaseUrl,
+          wsBaseUrl: entry.wsBaseUrl,
+        }),
+        credential: new BearerConnectionCredential({ token: entry.token }),
+      }),
+      [
+        target,
+        ...catalogRoutes(catalog, entry.environmentId).filter(
+          (route) => !("connectionId" in route) || route.connectionId !== connectionId,
+        ),
+      ],
+    );
+  }
+  return catalog;
 }
 
 export const importFleetConnections = Effect.fn("desktop.fleetConnections.import")(function* (

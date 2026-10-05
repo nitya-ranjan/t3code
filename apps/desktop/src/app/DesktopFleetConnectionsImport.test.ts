@@ -4,6 +4,7 @@ import {
   BearerConnectionCredential,
   BearerConnectionProfile,
   BearerConnectionTarget,
+  RelayConnectionTarget,
 } from "@t3tools/client-runtime/connection";
 import { EMPTY_CONNECTION_CATALOG_DOCUMENT } from "@t3tools/client-runtime/platform";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -80,7 +81,7 @@ describe("mergeFleetConnections", () => {
     assert.strictEqual(cred.credential.token, "new");
   });
 
-  it("replaces a hand-paired connection for the same environment under another connection id", () => {
+  it("preserves a hand-paired route while making the fleet route preferred", () => {
     const handPaired = (id: string) => {
       const environmentId = EnvironmentId.make(id);
       const connectionId = `paired-${id}`;
@@ -113,11 +114,15 @@ describe("mergeFleetConnections", () => {
       profiles: merged.profiles.filter((x) => x.environmentId === id),
     });
     const fleet = forEnv("e1");
-    assert.strictEqual(fleet.targets.length, 1);
-    assert.strictEqual(fleet.profiles.length, 1);
+    assert.strictEqual(fleet.targets.length, 2);
+    assert.strictEqual(fleet.profiles.length, 2);
     assert.strictEqual((fleet.targets[0] as BearerConnectionTarget).connectionId, "bearer:e1");
-    assert.strictEqual(fleet.profiles[0]!.connectionId, "bearer:e1");
-    const e1Credentials = merged.credentials.filter((c) => c.connectionId !== "paired-e2");
+    assert.deepStrictEqual(fleet.targets[1], e1.target);
+    assert.includeMembers(
+      fleet.profiles.map((p) => p.connectionId),
+      ["paired-e1", "bearer:e1"],
+    );
+    const e1Credentials = merged.credentials.filter((c) => c.connectionId === "bearer:e1");
     assert.strictEqual(e1Credentials.length, 1);
     assert.strictEqual(e1Credentials[0]!.connectionId, "bearer:e1");
     assert.strictEqual(e1Credentials[0]!.credential.token, "fleet-token");
@@ -130,7 +135,25 @@ describe("mergeFleetConnections", () => {
       merged.credentials.filter((c) => c.connectionId === "paired-e2"),
       [e2.credential],
     );
-    assert.strictEqual(merged.credentials.length, 2);
+    assert.strictEqual(merged.credentials.length, 3);
+  });
+
+  it("keeps relay routes and the environment's disabled state on token rotation", () => {
+    const environmentId = EnvironmentId.make("e1");
+    const relay = new RelayConnectionTarget({ environmentId, label: "Relay" });
+    const first = mergeFleetConnections(
+      {
+        ...EMPTY_CONNECTION_CATALOG_DOCUMENT,
+        targets: [relay],
+        disabledEnvironmentIds: [environmentId],
+      },
+      [entry("e1", "old")],
+    );
+    const updated = mergeFleetConnections(first, [entry("e1", "new")]);
+    assert.deepStrictEqual(updated.targets, first.targets);
+    assert.deepStrictEqual(updated.disabledEnvironmentIds, [environmentId]);
+    assert.strictEqual(updated.credentials.length, 1);
+    assert.strictEqual(updated.credentials[0]!.credential.token, "new");
   });
 
   it("keeps one connection per environment when the file repeats it (last wins)", () => {

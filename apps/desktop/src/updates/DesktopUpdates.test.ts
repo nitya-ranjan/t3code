@@ -21,6 +21,60 @@ import * as DesktopUpdates from "./DesktopUpdates.ts";
 import { flushCallbacks, makeHarness } from "./updatesTestHarness.ts";
 
 describe("DesktopUpdates", () => {
+  it.effect("keeps unsigned Mac installs on manual fork updates even when a feed exists", () => {
+    const harness = makeHarness({
+      packageJson: JSON.stringify({ t3codeUnsignedMacBuild: true }),
+      appUpdateYml: "provider: github\nowner: nitya-ranjan\nrepo: t3code\n",
+      env: { T3CODE_DESKTOP_MOCK_UPDATES: "false" },
+    });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        const state = yield* updates.getState;
+        assert.equal(state.enabled, false);
+        assert.equal(state.status, "disabled");
+        assert.include(state.message ?? "", "https://github.com/nitya-ranjan/t3code/releases");
+        assert.equal(Option.getOrNull(yield* updates.disabledReason), state.message);
+        assert.equal((yield* updates.setChannel("nightly")).message, state.message);
+        assert.equal(harness.listenerCount(), 0);
+        assert.equal(harness.checkCount(), 0);
+      }),
+    ).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect(
+    "preserves updates for signed Macs, legacy metadata, other platforms, and mock mode",
+    () =>
+      Effect.gen(function* () {
+        for (const options of [
+          { platform: "darwin" as const, packageJson: '{"t3codeUnsignedMacBuild":false}' },
+          { platform: "darwin" as const, packageJson: "{}" },
+          { platform: "win32" as const, packageJson: '{"t3codeUnsignedMacBuild":true}' },
+          {
+            platform: "darwin" as const,
+            packageJson: '{"t3codeUnsignedMacBuild":true}',
+            env: { T3CODE_DESKTOP_MOCK_UPDATES: "true" },
+          },
+        ]) {
+          const harness = makeHarness({
+            appUpdateYml: "provider: github\nowner: nitya-ranjan\nrepo: t3code\n",
+            env: { T3CODE_DESKTOP_MOCK_UPDATES: "false" },
+            ...options,
+          });
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const updates = yield* DesktopUpdates.DesktopUpdates;
+              yield* updates.configure;
+              assert.equal((yield* updates.getState).enabled, true);
+              assert.isTrue(Option.isNone(yield* updates.disabledReason));
+              assert.equal(harness.listenerCount(), 6);
+            }),
+          ).pipe(Effect.provide(harness.layer));
+        }
+      }),
+  );
+
   it("preserves complete causes for update poller and event failures", () => {
     const cause = Cause.combine(
       Cause.fail(new Error("updater failed")),
