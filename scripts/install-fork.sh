@@ -276,10 +276,33 @@ fi
 
 status=installed
 "$stage_only" && status=staged
+installed_version=
+installed_path=
+if [ "$platform" = darwin ]; then
+  for app_path in "$target" "$system_applications/T3 Code (Alpha).app" "$HOME/Applications/T3 Code (Alpha).app"; do
+    if recognized_app "$app_path"; then
+      installed_path=$app_path
+      installed_version=$(plutil -extract CFBundleShortVersionString raw -o - "$app_path/Contents/Info.plist" 2>/dev/null || true)
+      break
+    fi
+  done
+else
+  # Inspect the installed symlink/marker only; never execute a live CLI or
+  # infer that a source-checkout service is using the staged runtime.
+  installed_path=$(readlink -f "$target" 2>/dev/null || true)
+  if [ -n "$installed_path" ] && [ -f "$installed_path" ]; then
+    marker="$(dirname "$installed_path")/.install-complete"
+    if [ -f "$marker" ]; then installed_version=$(cat "$marker"); fi
+  else
+    installed_path=
+  fi
+fi
+if ! printf '%s\n' "$installed_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9]+([.-][A-Za-z0-9]+)*)?$'; then installed_version=; fi
 # A nonempty JSON object keeps macOS plutil from detecting an OpenStep plist.
 printf '{"schemaVersion":"1"}\n' > "$stage/receipt.json"
 set -- repository "$repo" version "$version" commit "$commit" platform "$platform" arch "$arch" status "$status" \
-  sha256 "$asset_sha" staged_path "$staged_payload" target "$target" previous_app "$backup" cleanup_status "$cleanup_status" checked_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  sha256 "$asset_sha" staged_path "$staged_payload" target "$target" installed_version "$installed_version" installed_path "$installed_path" \
+  previous_app "$backup" cleanup_status "$cleanup_status" checked_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 while [ "$#" -gt 0 ]; do
   if [ "$platform" = darwin ]; then
     plutil -insert "$1" -string "$2" "$stage/receipt.json"
@@ -293,6 +316,7 @@ cp "$stage/receipt.json" "$stage_root/.status.$$.json"
 mv "$stage_root/.status.$$.json" "$stage_root/status.json"
 keep_stage=true
 printf 'Fork %s %s. Receipt: %s/status.json\n' "$version" "$status" "$stage_root"
+printf 'Installed version: %s (running server version is not checked).\n' "${installed_version:-unknown}"
 if "$stage_only"; then
   printf 'After closing the app or stopping the CLI yourself, run locally:\n'
   quote() { printf "'"; printf '%s' "$1" | sed "s/'/'\"'\"'/g"; printf "'"; }

@@ -191,6 +191,8 @@ describe.skipIf(HostProcessPlatform.defaultValue() === "win32")("public fork ins
         version,
         status: "staged",
         commit,
+        installed_version: "",
+        installed_path: "",
       });
       expect(await NodeFSP.readdir(f.home)).toEqual([]);
       const status = f.run(["--status"]);
@@ -213,6 +215,37 @@ describe.skipIf(HostProcessPlatform.defaultValue() === "win32")("public fork ins
       await f.cleanup();
     }
   });
+
+  it.each(["Nightly", "Alpha"])(
+    "reports the older installed %s version while only staging the new release",
+    async (channel) => {
+      const f = await fixture();
+      try {
+        await NodeFSP.mkdir(f.systemApps);
+        const oldApp = NodePath.join(f.systemApps, `T3 Code (${channel}).app`);
+        await NodeFSP.cp(f.app, oldApp, { recursive: true });
+        const infoPath = NodePath.join(oldApp, "Contents/Info.plist");
+        const oldInfo = JSON.stringify({
+          CFBundleIdentifier: "com.t3tools.t3code",
+          CFBundleShortVersionString: "0.0.44-preview.20260930.3",
+        });
+        await NodeFSP.writeFile(infoPath, oldInfo);
+        const result = f.run(["--stage", "--version", version]);
+        expect(result.status, result.stderr).toBe(0);
+        expect(await f.receipt()).toMatchObject({
+          version,
+          status: "staged",
+          target: NodePath.join(f.systemApps, "T3 Code (Nightly).app"),
+          installed_version: "0.0.44-preview.20260930.3",
+          installed_path: oldApp,
+        });
+        expect(await NodeFSP.readFile(infoPath, "utf8")).toBe(oldInfo);
+        expect(result.stdout).toContain("running server version is not checked");
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
 
   it.each([
     { systemNightly: true, userNightly: true, systemAlpha: true, expected: "system" },
@@ -296,6 +329,8 @@ describe.skipIf(HostProcessPlatform.defaultValue() === "win32")("public fork ins
       expect(result.status, result.stderr).toBe(0);
       const receipt = await f.receipt();
       expect(receipt.status).toBe("installed");
+      expect(receipt.installed_version).toBe(version);
+      expect(receipt.installed_path).toBe(target);
       expect(await NodeFSP.readFile(NodePath.join(receipt.previous_app, "old-build"), "utf8")).toBe(
         "old",
       );

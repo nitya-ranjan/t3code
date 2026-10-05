@@ -109,6 +109,22 @@ action, which still asks the user to download and restart.
 
 ## Move existing installations onto the fork feed
 
+Upgrade environment hosts before switching their clients. V2 clients require
+orchestration protocol **2**; older hosts can authenticate a connection while
+still being unable to provide compatible projects and conversations.
+
+1. Stage the same reviewed release on the fleet and back up each host's T3 home.
+2. At a maintenance window, finish installation and restart the hosts that own
+   remote work, including Mini and Forge. Preserve each service's T3 home and
+   launcher options. Never interrupt an active chat just to complete rollout.
+3. Verify the **running** hosts report `orchestrationProtocolVersion: 2` in their
+   environment descriptors, then switch Air, Pro, and other clients to V2.
+
+Until a host can be upgraded, use its existing server-served web UI with the
+existing browser pairing. That UI matches its server. Keep its data and saved
+connections; reinstalling or clearing credentials does not repair a protocol
+mismatch. Do not run the previous app against a database already upgraded to V2.
+
 For an easy Mac desktop or Linux CLI download, use the fork staging installer:
 
 ```sh
@@ -120,7 +136,11 @@ It selects the latest published fork nightly, verifies release checksums and
 provenance, and prints a local installation command pinned to that version.
 Use `--version <version>` to select a specific release. Staging leaves installed
 applications and running chats alone; finish installation locally after stopping
-the app or server. `--status` shows the local staging/installation receipt.
+the app or server. `--status` shows the local staging/installation receipt:
+`version` identifies the downloaded release, while `installed_version` and
+`installed_path` describe the app or packaged CLI found locally at `checked_at`. An empty
+installed version means unknown. Neither staging nor an installed-version
+receipt proves that a running remote server has been upgraded.
 
 The private `nitya-ranjan/t3code-fleet` repository provides an **Update fleet**
 Actions workflow and runner enrollment instructions. It stages releases on
