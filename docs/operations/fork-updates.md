@@ -26,9 +26,11 @@ Mobile EAS workflows for this fork.
 
 ## Bring in upstream changes
 
-**Prepare fork upstream sync** checks every six hours for the latest upstream
-stable release. Run it manually to check sooner. The optional `upstream_ref`
-accepts a tag or branch; `main` opts into unreleased upstream changes.
+**Prepare fork upstream sync** checks every six hours for the latest published
+upstream nightly/beta release. Run it manually to check sooner. The optional
+`upstream_ref` accepts a tag or branch: choose a stable tag such as `v0.0.45` to
+test that release, or `main` to test unpublished upstream changes. The default
+excludes the maintainers' separate preview train.
 
 The workflow merges into a detached candidate, runs typechecks, the fork feature
 regressions, and a desktop/server/web build, then publishes a `fork-sync/...`
