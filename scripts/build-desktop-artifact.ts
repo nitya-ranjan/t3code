@@ -2733,7 +2733,18 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           schemes: ["t3code", "t3code-dev"],
         },
       ],
-      ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
+      ...(signed
+        ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") }
+        : {
+            // Packaging changes Electron's signed resources. Re-sign the entire
+            // bundle before archives/blockmaps are created, even without a
+            // Developer ID. Ad-hoc signatures cannot use library validation or
+            // notarization and still require manual updates.
+            identity: "-",
+            hardenedRuntime: false,
+            notarize: false,
+            strictVerify: true,
+          }),
       ...(macPasskeySigning
         ? {
             entitlements: macPasskeySigning.entitlementsPath,

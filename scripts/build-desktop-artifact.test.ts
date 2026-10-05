@@ -644,6 +644,13 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       // Windows unpacks native files explicitly so their JavaScript and metadata
       // stay archived. Other platforms retain electron-builder's defaults.
       assert.deepStrictEqual(mac.extraMetadata, { t3codeUnsignedMacBuild: true });
+      assert.include(mac.mac, {
+        identity: "-",
+        hardenedRuntime: false,
+        notarize: false,
+        strictVerify: true,
+      });
+      assert.notProperty(mac.mac, "sign");
       assert.deepStrictEqual(linux.extraMetadata, { t3codeUnsignedMacBuild: false });
       assert.deepStrictEqual(win.extraMetadata, { t3codeUnsignedMacBuild: false });
       assert.property(mac, "publish");
@@ -2003,6 +2010,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       const mac = config.mac as Record<string, unknown>;
       assert.deepStrictEqual(config.extraMetadata, { t3codeUnsignedMacBuild: false });
       assert.property(config, "publish");
+      assert.notProperty(mac, "identity");
+      assert.notProperty(mac, "hardenedRuntime");
+      assert.notProperty(mac, "notarize");
       assert.equal(config.appId, "com.t3tools.t3code");
       assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
       assert.equal(mac.provisioningProfile, "/tmp/t3code.provisionprofile");
