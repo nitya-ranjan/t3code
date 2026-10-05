@@ -1,0 +1,251 @@
+name: Release fork
+
+# Dispatch from nitya/release after reviewing the upstream merge and fork checks.
+# This workflow never deploys upstream infrastructure or publishes an npm package.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+env:
+  T3CODE_DESKTOP_UPDATE_REPOSITORY: nitya-ranjan/t3code
+
+jobs:
+  preflight:
+    if: github.repository == 'nitya-ranjan/t3code' && github.ref == 'refs/heads/nitya/release'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      ref: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - name: Verify release helpers
+        run: node --test .github/scripts/fork-release.test.cjs
+      - name: Resolve fork version
+        id: version
+        run: |
+          version="$(node .github/scripts/fork-release.cjs version "$(date -u +%Y%m%d)" "$GITHUB_RUN_NUMBER")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build_bundle:
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.ref }}
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+      - name: Install bundle and regression test dependencies
+        run: vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+      - name: Fork regression tests
+        run: node .github/scripts/fork-sync-checks.cjs
+      - name: Typecheck shipped packages
+        run: vp run --filter=@t3tools/shared --filter=@t3tools/contracts --filter=@t3tools/client-runtime --filter=t3 --filter=@t3tools/web --filter=@t3tools/desktop typecheck
+      - name: Align package versions
+        env:
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+        run: node scripts/update-release-package-versions.ts "$RELEASE_VERSION"
+      - name: Install browser secret helper build libraries
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+      - name: Build shared server, web, and Electron bundle
+        run: vp run build:desktop
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: js-bundle
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+          retention-days: 1
+
+  desktop_unix:
+    needs: [preflight, build_bundle]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS arm64
+            runner: macos-15
+            platform: mac
+            target: dmg
+            arch: arm64
+            rust_target: aarch64-apple-darwin
+            resource_key: darwin-arm64
+            cli_archive: true
+          - label: macOS x64
+            runner: macos-15-intel
+            platform: mac
+            target: dmg
+            arch: x64
+            rust_target: x86_64-apple-darwin
+            resource_key: darwin-x64
+            cli_archive: false
+          - label: Linux x64
+            runner: ubuntu-24.04
+            platform: linux
+            target: AppImage
+            arch: x64
+            rust_target: x86_64-unknown-linux-gnu
+            resource_key: linux-x64
+            cli_archive: true
+          - label: Linux arm64
+            runner: ubuntu-24.04-arm
+            platform: linux
+            target: AppImage
+            arch: arm64
+            rust_target: aarch64-unknown-linux-gnu
+            resource_key: linux-arm64
+            cli_archive: true
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      label: ${{ matrix.label }}
+      runner: ${{ matrix.runner }}
+      platform: ${{ matrix.platform }}
+      target: ${{ matrix.target }}
+      arch: ${{ matrix.arch }}
+      rust_target: ${{ matrix.rust_target }}
+      resource_key: ${{ matrix.resource_key }}
+      cli_archive: ${{ matrix.cli_archive }}
+      version: ${{ needs.preflight.outputs.version }}
+      ref: ${{ needs.preflight.outputs.ref }}
+      release_channel: nightly
+      relay_client_tracing: false
+      clerk_publishable_key: ""
+      clerk_jwt_template: ""
+      clerk_cli_oauth_client_id: ""
+      relay_url: ""
+
+  # Windows packages embed the matching Linux CLI archive for WSL.
+  desktop_windows:
+    needs: [preflight, build_bundle, desktop_unix]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            runner: windows-2025
+            arch: x64
+            rust_target: x86_64-pc-windows-msvc
+            resource_key: win32-x64
+          - label: Windows arm64
+            runner: windows-11-arm
+            arch: arm64
+            rust_target: aarch64-pc-windows-msvc
+            resource_key: win32-arm64
+    uses: ./.github/workflows/release-desktop.yml
+    secrets: inherit
+    with:
+      label: ${{ matrix.label }}
+      runner: ${{ matrix.runner }}
+      platform: win
+      target: nsis
+      arch: ${{ matrix.arch }}
+      rust_target: ${{ matrix.rust_target }}
+      resource_key: ${{ matrix.resource_key }}
+      cli_archive: true
+      version: ${{ needs.preflight.outputs.version }}
+      ref: ${{ needs.preflight.outputs.ref }}
+      release_channel: nightly
+      relay_client_tracing: false
+      clerk_publishable_key: ""
+      clerk_jwt_template: ""
+      clerk_cli_oauth_client_id: ""
+      relay_url: ""
+
+  publish:
+    needs: [preflight, desktop_unix, desktop_windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.preflight.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.preflight.outputs.ref }}
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: release-assets
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: cli-*
+          merge-multiple: true
+          path: release-assets
+      - name: Merge architecture updater manifests
+        run: |
+          node scripts/merge-update-manifests.ts --platform mac release-assets/nightly-mac.yml release-assets/nightly-mac-x64.yml
+          node scripts/merge-update-manifests.ts --platform win release-assets/nightly-win-x64.yml release-assets/nightly-win-arm64.yml release-assets/nightly.yml
+          rm release-assets/nightly-mac-x64.yml release-assets/nightly-win-x64.yml release-assets/nightly-win-arm64.yml
+          rm -f release-assets/builder-debug.yml
+      - name: Require complete release and checksum final assets
+        run: node .github/scripts/fork-release.cjs checksums release-assets "$RELEASE_VERSION"
+      - name: Create draft, upload, then publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v$RELEASE_VERSION"
+          cat > "$RUNNER_TEMP/fork-release-notes.md" <<EOF
+          Fork build from nitya/release at $RELEASE_COMMIT.
+
+          Desktop updates and CLI archives come from nitya-ranjan/t3code.
+          Apple and Windows signing require the fork's own signing credentials.
+          Mobile apps and T3 Connect infrastructure are not published by this workflow.
+          EOF
+
+          # A rerun can complete a draft left by an interrupted upload, but may
+          # never replace bytes from a release that users could already install.
+          if metadata="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish 2>/dev/null)"; then
+            jq -e --arg commit "$RELEASE_COMMIT" '.isDraft and .targetCommitish == $commit' <<< "$metadata" >/dev/null
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+              --target "$RELEASE_COMMIT" --draft --prerelease --latest=false \
+              --title "Fork $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/fork-release-notes.md"
+          fi
+          gh release upload "$tag" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/uploaded-assets"
+          find release-assets -maxdepth 1 -type f -printf '%f\n' | sort > "$RUNNER_TEMP/expected-assets"
+          diff -u "$RUNNER_TEMP/expected-assets" "$RUNNER_TEMP/uploaded-assets"
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false

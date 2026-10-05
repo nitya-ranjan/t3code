@@ -2,7 +2,7 @@
 # Installs the T3 Code CLI from a GitHub Release archive. Needs only sh, tar,
 # sha256sum or shasum, and curl or wget; no Node, npm, or compiler.
 #
-#   curl -fsSL https://t3.codes/install.sh | sh
+#   sh scripts/install.sh (from this fork's checkout)
 #
 # Environment:
 #   T3CODE_CHANNEL           release train to follow: stable, nightly, or preview
@@ -17,7 +17,8 @@
 # instead of fetching the release again.
 set -eu
 
-repo="pingdotgg/t3code"
+# Keep installations on the fork so updates preserve its custom features.
+repo="nitya-ranjan/t3code"
 base_url="${T3CODE_RELEASE_BASE_URL:-https://github.com/${repo}/releases/download}"
 t3_home="${T3CODE_HOME:-$HOME/.t3}"
 bin_dir="${T3CODE_INSTALL_BIN_DIR:-$HOME/.local/bin}"
@@ -193,7 +194,7 @@ else
   fetch_status=0
   fetch "${base_url}/v${version}/SHA256SUMS" "${staging}/SHA256SUMS" || fetch_status=$?
   if [ "$fetch_status" -eq 44 ]; then
-    fail "t3 ${version} has no release archive for ${platform}-${arch}; releases before the self-contained CLI can only be installed with \`npm install -g t3@${version}\`"
+    fail "t3 ${version} has no release archive for ${platform}-${arch}; choose a fork release with CLI assets at https://github.com/${repo}/releases"
   elif [ "$fetch_status" -ne 0 ]; then
     fail "could not download the release checksums"
   fi

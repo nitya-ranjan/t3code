@@ -1,5 +1,12 @@
 # Updating T3 Code
 
+For this fork, install desktop and server builds from
+[nitya-ranjan/t3code releases](https://github.com/nitya-ranjan/t3code/releases).
+An older preview desktop build needs one manual upgrade to a fork nightly build
+before it can receive update notifications. See the
+[fork setup guide](../operations/fork-updates.md#move-existing-installations-onto-the-fork-feed)
+for the initial server installation.
+
 The app you use and the server running your agents can be on different machines.
 When a server is behind your web or desktop app, an update notice appears in the
 conversation and **Settings → Connections**. Update the machine named in that
@@ -43,9 +50,10 @@ asks before restarting the background service; if you decline, run
 stop it and start it again afterwards with your usual options such as `--host`
 or `--tailscale-serve`.
 
-If you run the server with `npx` rather than an installed `t3`, there is
-nothing to update on the host: stop the server and relaunch it as
-`npx t3@<client-version>` with the same subcommand and options.
+`npx t3` and official package managers install upstream's build. To keep this
+fork's features, use the fork installer and its `t3 update` command. Stop a
+source-launched server before switching it to the installed fork CLI, keeping
+the same T3 home and startup options.
 
 ## If an update fails
 
@@ -54,7 +62,8 @@ update can roll back to the previous version. If the update still fails:
 
 1. Retry the offered action once.
 2. Check that you updated the server's machine, not only the device you are using.
-3. For a command-line server, stop it and relaunch the exact version shown in the notice.
+3. For a command-line server, run `t3 update <client-version>` on its host and
+   restart it with its usual options.
 
 ## Mobile updates
 

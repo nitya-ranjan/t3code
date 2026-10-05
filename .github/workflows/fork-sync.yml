@@ -1,0 +1,115 @@
+name: Prepare fork upstream sync
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream ref; leave empty for the latest stable release. Use main only to test unreleased changes."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    if: github.repository == 'nitya-ranjan/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      # Keep automation outside the checkout: nitya/release may not yet contain
+      # these files, and upstream is allowed to change its own workflow files.
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - name: Preserve and test sync automation
+        run: |
+          mkdir -p "$RUNNER_TEMP/fork-sync"
+          cp .github/scripts/fork-sync*.cjs "$RUNNER_TEMP/fork-sync/"
+          node --test "$RUNNER_TEMP/fork-sync/fork-sync.test.cjs"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: nitya/release
+          # Upstream may change workflow files. A repository-scoped token with
+          # Contents and Workflows write permission can publish those merges.
+          token: ${{ secrets.FORK_SYNC_TOKEN || github.token }}
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Fetch upstream and prepare candidate
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if test -z "$UPSTREAM_REF"; then
+            upstream_tag="$(gh api repos/pingdotgg/t3code/releases/latest --jq .tag_name)"
+            UPSTREAM_REF="refs/tags/$upstream_tag"
+          fi
+          git check-ref-format "refs/fork-sync/$UPSTREAM_REF"
+          git fetch --no-tags https://github.com/pingdotgg/t3code.git "$UPSTREAM_REF:refs/remotes/upstream/sync"
+          printf 'Selected upstream ref: `%s`\n\n' "$UPSTREAM_REF" >> "$GITHUB_STEP_SUMMARY"
+          node "$RUNNER_TEMP/fork-sync/fork-sync.cjs"
+
+      - name: Setup Vite+
+        if: steps.sync.outputs.changed == 'true'
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Install native build dependencies
+        if: steps.sync.outputs.changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev pkg-config
+          vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Typecheck fork surfaces
+        if: steps.sync.outputs.changed == 'true'
+        run: >-
+          vp run --filter @t3tools/contracts --filter @t3tools/shared
+          --filter @t3tools/client-runtime --filter t3 --filter @t3tools/web
+          --filter @t3tools/desktop
+          --concurrency-limit 2 typecheck
+
+      - name: Test fork features
+        if: steps.sync.outputs.changed == 'true'
+        run: node "$RUNNER_TEMP/fork-sync/fork-sync-checks.cjs"
+
+      - name: Build desktop and bundled server/web
+        if: steps.sync.outputs.changed == 'true'
+        run: |
+          vp run build:desktop
+          node apps/desktop/scripts/verify-preload-bundle.mjs
+
+      # GITHUB_TOKEN pushes do not trigger CI, so all validation above runs in
+      # this workflow. Never force-push or move the branch installed on hosts.
+      - name: Publish checked candidate branch
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          CANDIDATE_BRANCH: ${{ steps.sync.outputs.branch }}
+          CANDIDATE_SHA: ${{ steps.sync.outputs.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          if ! git push origin "HEAD:refs/heads/$CANDIDATE_BRANCH"; then
+            printf '\nCandidate push failed. If GitHub rejected workflow-file changes, configure FORK_SYNC_TOKEN with Contents and Workflows write permission for this fork, then rerun.\n' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          printf '\nValidation passed. Published `%s` at `%s`.\n\nReview this branch, then fast-forward `nitya/release` manually to this exact commit. No release was published and no installation was changed.\n' "$CANDIDATE_BRANCH" "$CANDIDATE_SHA" >> "$GITHUB_STEP_SUMMARY"

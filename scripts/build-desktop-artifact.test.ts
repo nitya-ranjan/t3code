@@ -327,6 +327,19 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect("keeps locally packaged fork builds on the fork update feed", () =>
+    Effect.gen(function* () {
+      const config = yield* resolveGitHubPublishConfig("nightly");
+      assert.deepStrictEqual(config, {
+        provider: "github",
+        owner: "nitya-ranjan",
+        repo: "t3code",
+        releaseType: "prerelease",
+        channel: "nightly",
+      });
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
   it.effect("omits update feeds for pull request preview builds", () =>
     Effect.gen(function* () {
       const preview = yield* createBuildConfig(

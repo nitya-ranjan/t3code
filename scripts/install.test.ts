@@ -8,6 +8,63 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
+describe.skipIf(HostProcessPlatform.defaultValue() === "win32")("fork installer", () => {
+  it("looks up and downloads fork releases without recommending upstream npm on missing assets", async () => {
+    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-fork-install-"));
+    const requestLog = NodePath.join(root, "requests");
+    try {
+      await NodeFSP.writeFile(
+        NodePath.join(root, "curl"),
+        `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    https://*) url="$1" ;;
+    -o) shift; destination="$1" ;;
+  esac
+  shift
+done
+printf '%s\\n' "$url" >> "$T3_TEST_REQUEST_LOG"
+case "$url" in
+  https://api.github.com/*)
+    printf '%s\\n' '{"tag_name":"v1.2.3"}' > "$destination"
+    printf 200 ;;
+  *) printf 404 ;;
+esac
+`,
+        { mode: 0o755 },
+      );
+      const result = NodeChildProcess.spawnSync(
+        "sh",
+        [NodePath.resolve(import.meta.dirname, "install.sh")],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${root}:${process.env.PATH}`,
+            T3_TEST_REQUEST_LOG: requestLog,
+            T3CODE_VERSION: "",
+            T3CODE_CHANNEL: "stable",
+            T3CODE_RELEASE_BASE_URL: "",
+            T3CODE_HOME: NodePath.join(root, "home"),
+            T3CODE_INSTALL_BIN_DIR: NodePath.join(root, "bin"),
+          },
+        },
+      );
+      expect(result.status).toBe(1);
+      expect((await NodeFSP.readFile(requestLog, "utf8")).trim().split("\n")).toEqual([
+        "https://api.github.com/repos/nitya-ranjan/t3code/releases?per_page=100",
+        "https://github.com/nitya-ranjan/t3code/releases/download/v1.2.3/SHA256SUMS",
+      ]);
+      expect(result.stderr).toContain(
+        "choose a fork release with CLI assets at https://github.com/nitya-ranjan/t3code/releases",
+      );
+      expect(result.stderr).not.toContain("npm install");
+    } finally {
+      await NodeFSP.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 // util-linux's script gives the real installer a terminal without a browser or extra packages.
 describe.skipIf(HostProcessPlatform.defaultValue() !== "linux")("installer terminal", () => {
   it.each([false, true])(
