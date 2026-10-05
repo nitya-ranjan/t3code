@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -27,18 +28,32 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
           sparse-checkout: |
             /*
             !/.repos/
           sparse-checkout-cone-mode: false
       - name: Verify release helpers
-        run: node --test .github/scripts/fork-release.test.cjs
+        run: node --test .github/scripts/fork-release.test.cjs .github/scripts/fork-sync-status.test.cjs
+      - name: Fetch upstream release tags
+        run: git fetch --no-filter --no-tags https://github.com/pingdotgg/t3code.git '+refs/tags/v*:refs/fork-upstream/tags/v*'
       - name: Resolve fork version
         id: version
         run: |
-          version="$(node .github/scripts/fork-release.cjs version "$(date -u +%Y%m%d)" "$GITHUB_RUN_NUMBER")"
+          version="$(node .github/scripts/fork-release.cjs version "$(date -u +%Y%m%d)" "$GITHUB_RUN_NUMBER" "$GITHUB_SHA")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Record exact fork and upstream sources
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          node .github/scripts/fork-release.cjs metadata "$RELEASE_VERSION" "$GITHUB_SHA" "$RUNNER_TEMP/fork-provenance"
+          cat "$RUNNER_TEMP/fork-provenance/fork-release-notes.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fork-provenance
+          path: ${{ runner.temp }}/fork-provenance/*
+          if-no-files-found: error
 
   build_bundle:
     needs: preflight
@@ -74,6 +89,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
       - name: Build shared server, web, and Electron bundle
         run: vp run build:desktop
+      - name: Verify desktop preload bundle
+        run: node apps/desktop/scripts/verify-preload-bundle.mjs
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: js-bundle
@@ -183,6 +200,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
+      actions: read
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
@@ -214,6 +232,12 @@ jobs:
           pattern: cli-*
           merge-multiple: true
           path: release-assets
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: fork-provenance
+          path: ${{ runner.temp }}/fork-provenance
+      - name: Attach source metadata
+        run: cp "$RUNNER_TEMP/fork-provenance/fork-release.json" release-assets/
       - name: Merge architecture updater manifests
         run: |
           node scripts/merge-update-manifests.ts --platform mac release-assets/nightly-mac.yml release-assets/nightly-mac-x64.yml
@@ -227,13 +251,6 @@ jobs:
         run: |
           set -euo pipefail
           tag="v$RELEASE_VERSION"
-          cat > "$RUNNER_TEMP/fork-release-notes.md" <<EOF
-          Fork build from nitya/release at $RELEASE_COMMIT.
-
-          Desktop updates and CLI archives come from nitya-ranjan/t3code.
-          Apple and Windows signing require the fork's own signing credentials.
-          Mobile apps and T3 Connect infrastructure are not published by this workflow.
-          EOF
 
           # A rerun can complete a draft left by an interrupted upload, but may
           # never replace bytes from a release that users could already install.
@@ -242,10 +259,37 @@ jobs:
           else
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
               --target "$RELEASE_COMMIT" --draft --prerelease --latest=false \
-              --title "Fork $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/fork-release-notes.md"
+              --title "Fork $RELEASE_VERSION" --notes-file "$RUNNER_TEMP/fork-provenance/fork-release-notes.md"
           fi
           gh release upload "$tag" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort > "$RUNNER_TEMP/uploaded-assets"
           find release-assets -maxdepth 1 -type f -printf '%f\n' | sort > "$RUNNER_TEMP/expected-assets"
           diff -u "$RUNNER_TEMP/expected-assets" "$RUNNER_TEMP/uploaded-assets"
-          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false \
+            --notes-file "$RUNNER_TEMP/fork-provenance/fork-release-notes.md"
+
+  report_release:
+    needs: [preflight, build_bundle, desktop_unix, desktop_windows, publish]
+    if: always() && github.repository == 'nitya-ranjan/t3code' && github.ref == 'refs/heads/nitya/release'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Refresh release tracking status
+        uses: actions/github-script@v8
+        env:
+          FORK_MAINTENANCE_ISSUE: ${{ vars.FORK_MAINTENANCE_ISSUE }}
+          RELEASE_RESULT: ${{ needs.publish.result == 'success' && 'success' || contains(needs.*.result, 'cancelled') && 'cancelled' || 'failure' }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        with:
+          script: |
+            const { updateReleaseMaintenanceIssue } = require('./.github/scripts/fork-sync-status.cjs');
+            await updateReleaseMaintenanceIssue({ github, context, core });

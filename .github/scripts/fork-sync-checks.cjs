@@ -6,22 +6,21 @@ const { join } = require("node:path");
 // still owns execution, including the server's serialized integration tests.
 const groups = [
   ["packages/contracts", "@t3tools/contracts", ["src/settings.test.ts"]],
-  ["packages/client-runtime", "@t3tools/client-runtime", ["src/state/threadReducer.test.ts"]],
+  ["packages/client-runtime", "@t3tools/client-runtime", ["src/state/entities.test.ts"]],
   [
     "apps/server",
     "t3",
     [
       "src/project/AgentSessionImporter.test.ts",
-      "src/orchestration/decider.import.test.ts",
-      "src/orchestration/AccountFallbackReactor.test.ts",
-      "src/orchestration/accountFallback/handoffPrompt.test.ts",
-      "src/orchestration/accountFallback/policy.test.ts",
-      "src/orchestration/accountFallback/simulateUsageLimit.test.ts",
-      "src/orchestration/accountFallback/webhook.test.ts",
-      "src/orchestration/decider.fallback.test.ts",
-      "src/orchestration/projector.fallback.test.ts",
+      "src/project/AgentSessionScanner.test.ts",
+      "src/orchestration-v2/AccountFallbackReactor.test.ts",
+      "src/orchestration-v2/accountFallback/handoffPrompt.test.ts",
+      "src/orchestration-v2/accountFallback/policy.test.ts",
+      "src/orchestration-v2/accountFallback/simulateUsageLimit.test.ts",
+      "src/orchestration-v2/accountFallback/webhook.test.ts",
       "src/persistence/Migrations/055_ProjectionThreadsFallback.test.ts",
-      "integration/accountFallback.integration.test.ts",
+      "src/persistence/reconcileForkFallbackMigration.test.ts",
+      "src/orchestration-v2/legacy/LegacyV1ThreadImporter.test.ts",
     ],
   ],
   [

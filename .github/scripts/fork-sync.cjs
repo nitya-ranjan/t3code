@@ -71,12 +71,14 @@ function prepareCandidate({
   } catch (cause) {
     const files = git(cwd, ["diff", "--name-only", "--diff-filter=U"]);
     if (hasRef(cwd, "MERGE_HEAD")) git(cwd, ["merge", "--abort"]);
-    throw new Error(
+    const error = new Error(
       files
         ? `Upstream merge conflicts; nitya/release was not changed. Resolve these files manually:\n${files}`
         : `Upstream merge failed; no candidate was published.\n${cause.stderr || cause.message}`,
       { cause },
     );
+    error.syncStatus = files ? "conflict" : "failed";
+    throw error;
   }
   return { changed: true, base, upstream, branch, sha: git(cwd, ["rev-parse", "HEAD"]) };
 }
@@ -98,6 +100,9 @@ if (require.main === module) {
     if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
     console.log(summary);
   } catch (error) {
+    if (process.env.GITHUB_OUTPUT) {
+      appendFileSync(process.env.GITHUB_OUTPUT, `status=${error.syncStatus || "failed"}\n`);
+    }
     if (process.env.GITHUB_STEP_SUMMARY) {
       appendFileSync(
         process.env.GITHUB_STEP_SUMMARY,
