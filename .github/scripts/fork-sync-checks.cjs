@@ -40,7 +40,11 @@ const groups = [
     "@t3tools/desktop",
     ["src/app/DesktopFleetConnectionsImport.test.ts", "src/updates/DesktopUpdates.test.ts"],
   ],
-  ["scripts", "@t3tools/scripts", ["build-desktop-artifact.test.ts", "install.test.ts"]],
+  [
+    "scripts",
+    "@t3tools/scripts",
+    ["build-desktop-artifact.test.ts", "install.test.ts", "install-fork.test.ts"],
+  ],
 ];
 
 function runChecks({ cwd = process.cwd(), run = execFileSync } = {}) {
