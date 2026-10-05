@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_ref:
-        description: "Upstream ref; leave empty for the latest stable release. Use main only to test unreleased changes."
+        description: "Upstream ref; leave empty for the latest published nightly/beta. Use main only to test unreleased changes."
         required: false
         type: string
 
@@ -37,6 +37,25 @@ jobs:
           cp .github/scripts/fork-sync*.cjs "$RUNNER_TEMP/fork-sync/"
           node --test "$RUNNER_TEMP/fork-sync/fork-sync.test.cjs"
 
+      - name: Resolve upstream nightly
+        id: upstream
+        uses: actions/github-script@v8
+        env:
+          UPSTREAM_REF: ${{ inputs.upstream_ref }}
+        with:
+          script: |
+            if (process.env.UPSTREAM_REF) {
+              core.setOutput('ref', process.env.UPSTREAM_REF);
+            } else {
+              const { resolveLatestNightlyCommit } = require('./.github/scripts/check-nightly-release.cjs');
+              const { tag } = await resolveLatestNightlyCommit({
+                github,
+                context: { repo: { owner: 'pingdotgg', repo: 't3code' } },
+                core,
+              });
+              core.setOutput('ref', `refs/tags/${tag}`);
+            }
+
       - uses: actions/checkout@v6
         with:
           ref: nitya/release
@@ -52,15 +71,10 @@ jobs:
       - name: Fetch upstream and prepare candidate
         id: sync
         env:
-          GH_TOKEN: ${{ github.token }}
-          UPSTREAM_REF: ${{ inputs.upstream_ref }}
+          UPSTREAM_REF: ${{ steps.upstream.outputs.ref }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          if test -z "$UPSTREAM_REF"; then
-            upstream_tag="$(gh api repos/pingdotgg/t3code/releases/latest --jq .tag_name)"
-            UPSTREAM_REF="refs/tags/$upstream_tag"
-          fi
           git check-ref-format "refs/fork-sync/$UPSTREAM_REF"
           git fetch --no-tags https://github.com/pingdotgg/t3code.git "$UPSTREAM_REF:refs/remotes/upstream/sync"
           printf 'Selected upstream ref: `%s`\n\n' "$UPSTREAM_REF" >> "$GITHUB_STEP_SUMMARY"
