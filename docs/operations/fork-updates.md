@@ -109,6 +109,26 @@ action, which still asks the user to download and restart.
 
 ## Move existing installations onto the fork feed
 
+For an easy Mac desktop or Linux CLI download, use the fork staging installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/nitya-ranjan/t3code/nitya/release/scripts/install-fork.sh -o /tmp/install-t3-fork.sh
+sh /tmp/install-t3-fork.sh --stage
+```
+
+It selects the latest published fork nightly, verifies release checksums and
+provenance, and prints a local installation command pinned to that version.
+Use `--version <version>` to select a specific release. Staging leaves installed
+applications and running chats alone; finish installation locally after stopping
+the app or server. `--status` shows the local staging/installation receipt.
+
+The private `nitya-ranjan/t3code-fleet` repository provides an **Update fleet**
+Actions workflow and runner enrollment instructions. It stages releases on
+enrolled machines daily or on demand; it never installs or restarts them.
+Offline runners wait in GitHub's queue. Public release builds continue to use
+GitHub-hosted runners; personal-machine runners belong only to the private
+staging repository. Mobile enrollment and distribution are deferred.
+
 The original `0.0.44-preview.20260930.1` desktop build deliberately has no update
 feed. Install one of the new fork `nightly` desktop releases manually on each
 machine. macOS continues to require manual installation for subsequent releases.
