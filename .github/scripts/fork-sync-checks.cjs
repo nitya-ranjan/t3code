@@ -5,12 +5,14 @@ const { join } = require("node:path");
 // These regressions cover the fork's features; package-local Vitest config
 // still owns execution, including the server's serialized integration tests.
 const groups = [
+  ["packages/shared", "@t3tools/shared", ["src/cliRelease.test.ts"]],
   ["packages/contracts", "@t3tools/contracts", ["src/settings.test.ts"]],
   ["packages/client-runtime", "@t3tools/client-runtime", ["src/state/entities.test.ts"]],
   [
     "apps/server",
     "t3",
     [
+      "src/cli/update.test.ts",
       "src/project/AgentSessionImporter.test.ts",
       "src/project/AgentSessionScanner.test.ts",
       "src/orchestration-v2/AccountFallbackReactor.test.ts",
@@ -27,12 +29,18 @@ const groups = [
     "apps/web",
     "@t3tools/web",
     [
+      "src/versionSkew.test.ts",
       "src/components/settings/agentSessionImport.logic.test.ts",
       "src/components/chat/fallbackBanner.logic.test.ts",
       "src/components/settings/accountFallbackSettings.logic.test.ts",
     ],
   ],
-  ["apps/desktop", "@t3tools/desktop", ["src/app/DesktopFleetConnectionsImport.test.ts"]],
+  [
+    "apps/desktop",
+    "@t3tools/desktop",
+    ["src/app/DesktopFleetConnectionsImport.test.ts", "src/updates/DesktopUpdates.test.ts"],
+  ],
+  ["scripts", "@t3tools/scripts", ["build-desktop-artifact.test.ts", "install.test.ts"]],
 ];
 
 function runChecks({ cwd = process.cwd(), run = execFileSync } = {}) {
